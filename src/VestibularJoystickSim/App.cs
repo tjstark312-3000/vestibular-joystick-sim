@@ -330,7 +330,12 @@ namespace VestibularJoystickSim
                    PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
                    PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Empty("MSFS off"), 100000.0), new double[] { 0.0, 0.0, 0.0 }) &&
                    PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
-                   PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate });
+                   PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
+                   PacketValuesEqual(MsfsControlToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -0.25), 1.0), new double[] { 0.0, -GvsMaxRate * 0.25, GvsMaxRate * 0.5 }) &&
+                   PacketValuesEqual(MsfsControlToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, -2.0), 1.0), new double[] { 0.0, -GvsMaxRate, GvsMaxRate }) &&
+                   Math.Abs(NormalizeMsfsControlPosition(16384.0) - 1.0) < 0.0001 &&
+                   Math.Abs(NormalizeMsfsControlPosition(-16384.0) + 1.0) < 0.0001 &&
+                   Math.Abs(NormalizeMsfsControlPosition(0.5) - 0.5) < 0.0001;
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -366,9 +371,11 @@ namespace VestibularJoystickSim
                 double targetRoll;
                 if (UseMsfsPhysics() && msfsMotion.IsFresh)
                 {
-                    targetYaw = Clamp((msfsMotion.R * 42.0) + (ApplyDeadzone(inputX) * 20.0 * visualGain), -65.0, 65.0);
-                    targetPitch = Clamp(msfsMotion.PitchDeg + (ApplyDeadzone(inputY) * 14.0 * visualGain), -55.0, 55.0);
-                    targetRoll = Clamp(msfsMotion.RollDeg + (ApplyDeadzone(inputX) * 8.0 * visualGain), -28.0, 28.0);
+                    double controlX = ActiveControlX();
+                    double controlY = ActiveControlY();
+                    targetYaw = Clamp((msfsMotion.R * 42.0) + (controlX * 20.0 * visualGain), -65.0, 65.0);
+                    targetPitch = Clamp(msfsMotion.PitchDeg + (controlY * 14.0 * visualGain), -55.0, 55.0);
+                    targetRoll = Clamp(msfsMotion.RollDeg + (controlX * 8.0 * visualGain), -28.0, 28.0);
                 }
                 else
                 {
@@ -601,18 +608,39 @@ namespace VestibularJoystickSim
                 return stickCommand;
             }
 
+            double[] controlCommand = msfsMotion.HasControls ? MsfsControlToCommandedRates(msfsMotion, gain) : stickCommand;
             double[] msfsCommand = MsfsMotionToCommandedRates(msfsMotion, gain);
             return new double[]
             {
-                Clamp(stickCommand[0] + msfsCommand[0], -GvsMaxRate, GvsMaxRate),
-                Clamp(stickCommand[1] + msfsCommand[1], -GvsMaxRate, GvsMaxRate),
-                Clamp(stickCommand[2] + msfsCommand[2], -GvsMaxRate, GvsMaxRate)
+                Clamp(controlCommand[0] + msfsCommand[0], -GvsMaxRate, GvsMaxRate),
+                Clamp(controlCommand[1] + msfsCommand[1], -GvsMaxRate, GvsMaxRate),
+                Clamp(controlCommand[2] + msfsCommand[2], -GvsMaxRate, GvsMaxRate)
             };
         }
 
         private bool UseMsfsPhysics()
         {
             return msfsPhysicsCheck != null && msfsPhysicsCheck.Checked;
+        }
+
+        private double ActiveControlX()
+        {
+            if (UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls)
+            {
+                return ApplyDeadzone(msfsMotion.ControlX);
+            }
+
+            return ApplyDeadzone(inputX);
+        }
+
+        private double ActiveControlY()
+        {
+            if (UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls)
+            {
+                return ApplyDeadzone(msfsMotion.ControlY);
+            }
+
+            return ApplyDeadzone(inputY);
         }
 
         private void ArmButtonClick(object sender, EventArgs e)
@@ -777,12 +805,15 @@ namespace VestibularJoystickSim
 
         private void UpdateUi()
         {
-            double intensity = Math.Min(1.0, Math.Sqrt(inputX * inputX + inputY * inputY));
+            double displayX = ActiveControlX();
+            double displayY = ActiveControlY();
+            double intensity = Math.Min(1.0, Math.Sqrt(displayX * displayX + displayY * displayY));
+            string controlSource = UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls ? "MSFS controls" : physicalInputSource;
             string activeInput = UseMsfsPhysics()
-                ? msfsInputStatus + " + " + physicalInputSource
-                : physicalInputSource;
-            inputLabel.Text = "Input: " + activeInput + "   Yaw " + Math.Round(Math.Abs(inputX) * 100.0) +
-                "%   Pitch " + Math.Round(Math.Abs(inputY) * 100.0) +
+                ? msfsInputStatus + " + " + controlSource
+                : controlSource;
+            inputLabel.Text = "Input: " + activeInput + "   Yaw " + Math.Round(Math.Abs(displayX) * 100.0) +
+                "%   Pitch " + Math.Round(Math.Abs(displayY) * 100.0) +
                 "%   Signal " + Math.Round(intensity * 100.0) + "%";
 
             yawLabel.Text = "Yaw: " + yaw.ToString("0.0") + " deg";
@@ -815,8 +846,8 @@ namespace VestibularJoystickSim
             headView.QRate = qRate;
             headView.RRate = rRate;
             headView.Invalidate();
-            stickView.VectorX = UseMsfsPhysics() && msfsMotion.IsFresh ? Clamp(commandedR / GvsMaxRate, -1.0, 1.0) : inputX;
-            stickView.VectorY = UseMsfsPhysics() && msfsMotion.IsFresh ? Clamp(commandedQ / GvsMaxRate, -1.0, 1.0) : inputY;
+            stickView.VectorX = UseMsfsPhysics() && msfsMotion.IsFresh ? Clamp(commandedR / GvsMaxRate, -1.0, 1.0) : displayX;
+            stickView.VectorY = UseMsfsPhysics() && msfsMotion.IsFresh ? Clamp(commandedQ / GvsMaxRate, -1.0, 1.0) : displayY;
             stickView.Connected = physicalInputConnected || (UseMsfsPhysics() && msfsMotion.IsFresh);
             stickView.ControllerIndex = physicalInputIndex;
             stickView.SourceName = activeInput;
@@ -1104,6 +1135,30 @@ namespace VestibularJoystickSim
             };
         }
 
+        private static double[] MsfsControlToCommandedRates(MotionSnapshot motion, double outputGain)
+        {
+            if (!motion.IsFresh || !motion.HasControls)
+            {
+                return new double[] { 0.0, 0.0, 0.0 };
+            }
+
+            double safeGain = Clamp(outputGain, 0.0, MaxGain);
+            double yaw = Clamp(motion.ControlX * GvsMaxRate * safeGain, -GvsMaxRate, GvsMaxRate);
+            double pitch = Clamp(motion.ControlY * GvsMaxRate * safeGain, -GvsMaxRate, GvsMaxRate);
+            return new double[] { 0.0, pitch, yaw };
+        }
+
+        internal static double NormalizeMsfsControlPosition(double value)
+        {
+            double sanitized = Clamp(value, -16384.0, 16384.0);
+            if (Math.Abs(sanitized) <= 1.0)
+            {
+                return sanitized;
+            }
+
+            return Clamp(sanitized / 16384.0, -1.0, 1.0);
+        }
+
         private static double[] PqrToCodeMatrixCurrents(double p, double q, double r)
         {
             double weightedPitch = 1.5 * q;
@@ -1289,6 +1344,9 @@ namespace VestibularJoystickSim
         public double RollDeg;
         public double PitchDeg;
         public double YawDeg;
+        public bool HasControls;
+        public double ControlX;
+        public double ControlY;
 
         public bool IsFresh
         {
@@ -1307,6 +1365,15 @@ namespace VestibularJoystickSim
             snapshot.RollDeg = Sanitize(rollDeg);
             snapshot.PitchDeg = Sanitize(pitchDeg);
             snapshot.YawDeg = Sanitize(yawDeg);
+            return snapshot;
+        }
+
+        public static MotionSnapshot Fresh(string source, double p, double q, double r, double rollDeg, double pitchDeg, double yawDeg, double controlX, double controlY)
+        {
+            MotionSnapshot snapshot = Fresh(source, p, q, r, rollDeg, pitchDeg, yawDeg);
+            snapshot.HasControls = true;
+            snapshot.ControlX = Sanitize(controlX);
+            snapshot.ControlY = Sanitize(controlY);
             return snapshot;
         }
 
@@ -1341,6 +1408,7 @@ namespace VestibularJoystickSim
         private const uint SimConnectDataRequestFlagDefault = 0;
         private const uint SimConnectRecvIdSimobjectData = 8;
         private const int SimobjectDataOffset = 40;
+        private const int MotionDataBytes = 40;
 
         private readonly int windowMessage;
         private readonly DispatchProc dispatchProc;
@@ -1448,6 +1516,8 @@ namespace VestibularJoystickSim
             AddDouble("ROTATION VELOCITY BODY X", "Feet per second");
             AddDouble("ROTATION VELOCITY BODY Y", "Feet per second");
             AddDouble("ROTATION VELOCITY BODY Z", "Feet per second");
+            AddDouble("AILERON POSITION", "Position");
+            AddDouble("ELEVATOR POSITION", "Position");
 
             int hr = SimConnect_RequestDataOnSimObject(
                 handle,
@@ -1478,7 +1548,7 @@ namespace VestibularJoystickSim
 
         private void Dispatch(IntPtr data, uint cbData, IntPtr context)
         {
-            if (data == IntPtr.Zero || cbData < SimobjectDataOffset + 24)
+            if (data == IntPtr.Zero || cbData < SimobjectDataOffset + MotionDataBytes)
             {
                 return;
             }
@@ -1492,7 +1562,9 @@ namespace VestibularJoystickSim
             double bodyX = ReadDouble(data, SimobjectDataOffset);
             double bodyY = ReadDouble(data, SimobjectDataOffset + 8);
             double bodyZ = ReadDouble(data, SimobjectDataOffset + 16);
-            latest = MotionSnapshot.Fresh("MSFS SimConnect physics", bodyY, bodyX, bodyZ, 0.0, 0.0, 0.0);
+            double aileron = MainForm.NormalizeMsfsControlPosition(ReadDouble(data, SimobjectDataOffset + 24));
+            double elevator = MainForm.NormalizeMsfsControlPosition(ReadDouble(data, SimobjectDataOffset + 32));
+            latest = MotionSnapshot.Fresh("MSFS controls + physics", bodyY, bodyX, bodyZ, 0.0, 0.0, 0.0, aileron, elevator);
             status = latest.Source;
         }
 
