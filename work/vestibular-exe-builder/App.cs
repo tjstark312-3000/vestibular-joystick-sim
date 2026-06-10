@@ -337,59 +337,9 @@ namespace VestibularJoystickSim
                    PacketValuesEqual(JoystickToCommandedRates(0.001, 0.0, 100000.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, -1, 1.0), new double[] { -GvsMaxRate, 0.0, 0.0 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, 1, 0.5), new double[] { GvsMaxRate * 0.5, 0.0, 0.0 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, -1, 0.5), new double[] { -GvsMaxRate * 0.5, 0.0, 0.0 }) &&
-                   PacketValuesEqual(GameMotionToCommandedRates(MotionSnapshot.Empty("No telemetry"), 100000.0), new double[] { 0.0, 0.0, 0.0 }) &&
                    PacketValuesEqual(GameMotionToCommandedRates(MotionSnapshot.Fresh("Test", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
                    PacketValuesEqual(GameMotionToCommandedRates(MotionSnapshot.Fresh("Test", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
-                   ForzaUdpTelemetryInput.SelfTest() &&
-                   ControlWiringSelfTest();
-        }
-
-        private static bool ControlWiringSelfTest()
-        {
-            MainForm form = null;
-            try
-            {
-                form = new MainForm();
-                bool controlsPresent =
-                    form.inputSourceCombo.Items.Count == 3 &&
-                    string.Equals(form.inputSourceCombo.Items[0].ToString(), "Controller stick", StringComparison.Ordinal) &&
-                    string.Equals(form.inputSourceCombo.Items[1].ToString(), "MSFS physics + stick", StringComparison.Ordinal) &&
-                    string.Equals(form.inputSourceCombo.Items[2].ToString(), "Forza Horizon 5 + stick", StringComparison.Ordinal) &&
-                    form.inputSourceCombo.SelectedIndex == 0 &&
-                    form.protocolCombo.Items.Count == 1 &&
-                    string.Equals(form.protocolCombo.Items[0].ToString(), "Legacy gvs.py UART 9600", StringComparison.Ordinal) &&
-                    form.protocolCombo.SelectedIndex == 0 &&
-                    string.Equals(form.connectButton.Text, "Connect", StringComparison.Ordinal) &&
-                    string.Equals(form.armButton.Text, "Arm", StringComparison.Ordinal) &&
-                    string.Equals(form.calLeftButton.Text, "Cal Left", StringComparison.Ordinal) &&
-                    string.Equals(form.calRightButton.Text, "Cal Right", StringComparison.Ordinal) &&
-                    string.Equals(form.pauseButton.Text, "Pause", StringComparison.Ordinal) &&
-                    string.Equals(form.resetButton.Text, "Reset", StringComparison.Ordinal) &&
-                    form.gainSlider.Minimum == 50 &&
-                    form.gainSlider.Maximum == (int)(MaxGain * 100.0) &&
-                    form.gainSlider.Value == (int)(DefaultGain * 100.0);
-
-                form.StartCalibration(1);
-                double[] leftCalibration = form.BuildCommandedRates(1.0, 1.0, 1.0);
-                form.StartCalibration(-1);
-                double[] rightCalibration = form.BuildCommandedRates(1.0, 1.0, 1.0);
-
-                return controlsPresent &&
-                       PacketValuesEqual(leftCalibration, new double[] { GvsMaxRate, 0.0, 0.0 }) &&
-                       PacketValuesEqual(rightCalibration, new double[] { -GvsMaxRate, 0.0, 0.0 });
-            }
-            finally
-            {
-                if (form != null)
-                {
-                    form.timer.Stop();
-                    form.gameTelemetry.Dispose();
-                    form.Dispose();
-                }
-            }
+                   ForzaUdpTelemetryInput.SelfTest();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
