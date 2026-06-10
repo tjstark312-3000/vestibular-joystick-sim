@@ -21,6 +21,7 @@ Native Windows VMocion/GVS controller prototype with a physical left-stick input
 - Reads MSFS game physics through SimConnect when `MSFS physics + stick` is selected.
 - Reads Forza Horizon 5 game physics from UDP Data Out on local ports `5300` or `5607` when `Forza Horizon 5 + stick` is selected.
 - Keeps the on-screen joystick out of the control path.
+- Includes Cal Left/Cal Right buttons that send opposite signed P-axis calibration pulses while Reset/Pause return the output to neutral.
 
 ## Build
 
