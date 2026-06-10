@@ -2,6 +2,10 @@
 !.gitignore
 !README.md
 !build.ps1
+!src/
+!src/VestibularJoystickSim/
+!src/VestibularJoystickSim/App.cs
+!src/VestibularJoystickSim/VestibularJoystickSim.csproj
 !outputs/
 !outputs/vestibular-joystick-sim/
 !outputs/vestibular-joystick-sim/VestibularJoystickSim.exe

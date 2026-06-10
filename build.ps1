@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$source = Join-Path $root 'work\vestibular-exe-builder\App.cs'
+$source = Join-Path $root 'src\VestibularJoystickSim\App.cs'
 $output = Join-Path $root 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe'
 
 if (-not (Test-Path -LiteralPath $csc)) {
