@@ -23,5 +23,11 @@
   <ItemGroup>
     <Compile Include="App.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\deps\SimConnect.dll">
+      <Link>SimConnect.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
