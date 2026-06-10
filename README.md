@@ -6,6 +6,7 @@ Native Windows VMocion/GVS controller prototype with a physical left-stick input
 
 - `outputs/vestibular-joystick-sim/VestibularJoystickSim.exe` - restored first-uploaded executable.
 - `outputs/vestibular-joystick-sim/VestibularJoystickSim_clone.exe` - untouched clone executable kept for comparison.
+- `known-good/VestibularJoystickSim_WORKING_2026-06-10.exe` - confirmed working restore copy.
 - `src/VestibularJoystickSim/App.cs` - clean prebuild source code for the main executable.
 - `src/VestibularJoystickSim/VestibularJoystickSim.csproj` - project metadata for the WinForms app.
 - `work/vestibular-exe-builder/App.cs` - WinForms source for the main executable.

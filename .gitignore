@@ -13,6 +13,9 @@
 !outputs/vestibular-joystick-sim/VestibularJoystickSim.exe
 !outputs/vestibular-joystick-sim/VestibularJoystickSim_clone.exe
 !outputs/vestibular-joystick-sim/SimConnect.dll
+!known-good/
+!known-good/WORKING_VERSION.md
+!known-good/VestibularJoystickSim_WORKING_2026-06-10.exe
 !work/
 !work/vestibular-exe-builder/
 !work/vestibular-exe-builder/App.cs
