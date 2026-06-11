@@ -4,6 +4,8 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO.Ports;
 using System.Management;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -41,10 +43,12 @@ namespace VestibularJoystickSim
 
         private readonly PhysicalStickView stickView;
         private readonly PhysicalJoystickInput physicalInput;
+        private readonly ForzaUdpTelemetryInput forzaInput;
         private readonly HeadView headView;
         private readonly Timer timer;
         private readonly ComboBox portCombo;
         private readonly ComboBox protocolCombo;
+        private readonly CheckBox forzaPhysicsCheck;
         private readonly Button connectButton;
         private readonly Button armButton;
         private readonly Button pauseButton;
@@ -84,6 +88,8 @@ namespace VestibularJoystickSim
         private bool physicalInputConnected;
         private int physicalInputIndex = -1;
         private string physicalInputSource = "No left stick";
+        private MotionSnapshot forzaMotion = MotionSnapshot.Empty("Forza physics off");
+        private string forzaInputStatus = "Forza physics off";
         private double commandedP;
         private double commandedQ;
         private double commandedR;
@@ -110,12 +116,13 @@ namespace VestibularJoystickSim
             Font = new Font("Segoe UI", 9.0f);
             StartPosition = FormStartPosition.CenterScreen;
             physicalInput = new PhysicalJoystickInput();
+            forzaInput = new ForzaUdpTelemetryInput();
 
             TableLayoutPanel root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
             root.RowCount = 2;
             root.ColumnCount = 1;
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.Padding = new Padding(18);
             root.BackColor = Theme.Background;
@@ -167,6 +174,15 @@ namespace VestibularJoystickSim
             gainValueLabel = MakeSmallLabel(DefaultGain.ToString("0.00"));
             gainValueLabel.Width = 92;
             topControls.Controls.Add(gainValueLabel);
+
+            forzaPhysicsCheck = MakeCheckBox("Forza physics");
+            forzaPhysicsCheck.CheckedChanged += delegate
+            {
+                forzaInput.ResetStatus();
+                SendNeutralOutput();
+                UpdateUi();
+            };
+            topControls.Controls.Add(forzaPhysicsCheck);
 
             protocolCombo = MakeCombo();
             protocolCombo.Items.Add("Legacy gvs.py UART 9600");
@@ -312,12 +328,16 @@ namespace VestibularJoystickSim
                    PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 1.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.001, 0.0, 100000.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, GvsMaxRate }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 });
+                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
+                   ForzaUdpTelemetryInput.SelfTest();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             SafeDisarmAndClose();
+            forzaInput.Dispose();
             base.OnFormClosing(e);
         }
 
@@ -327,13 +347,26 @@ namespace VestibularJoystickSim
             double dt = Math.Min((now - lastTick).TotalSeconds, 0.05);
             lastTick = now;
             UpdatePhysicalStickInput();
+            UpdateForzaInput();
 
             if (!paused)
             {
                 double visualGain = Math.Min(gain, 4.0);
-                double targetYaw = Clamp(ApplyDeadzone(inputX) * 48.0 * visualGain, -65.0, 65.0);
-                double targetPitch = Clamp(ApplyDeadzone(inputY) * 38.0 * visualGain, -55.0, 55.0);
-                double targetRoll = Clamp(ApplyDeadzone(inputX) * 16.0 * visualGain, -28.0, 28.0);
+                double targetYaw;
+                double targetPitch;
+                double targetRoll;
+                if (UseForzaPhysics() && forzaMotion.IsFresh)
+                {
+                    targetYaw = Clamp((forzaMotion.R * 42.0) + (ApplyDeadzone(inputX) * 20.0 * visualGain), -65.0, 65.0);
+                    targetPitch = Clamp(forzaMotion.PitchDeg + (ApplyDeadzone(inputY) * 14.0 * visualGain), -55.0, 55.0);
+                    targetRoll = Clamp(forzaMotion.RollDeg + (ApplyDeadzone(inputX) * 8.0 * visualGain), -28.0, 28.0);
+                }
+                else
+                {
+                    targetYaw = Clamp(ApplyDeadzone(inputX) * 48.0 * visualGain, -65.0, 65.0);
+                    targetPitch = Clamp(ApplyDeadzone(inputY) * 38.0 * visualGain, -55.0, 55.0);
+                    targetRoll = Clamp(ApplyDeadzone(inputX) * 16.0 * visualGain, -28.0, 28.0);
+                }
                 double response = 1.0 - Math.Pow(0.001, dt);
 
                 yaw = Lerp(yaw, targetYaw, response);
@@ -352,7 +385,7 @@ namespace VestibularJoystickSim
             double activeY = paused ? 0.0 : ApplyDeadzone(inputY);
             double calibrationIntensity = GetCalibrationIntensity();
 
-            double[] commanded = JoystickToCommandedRates(activeX, activeY, gain, calibrationDirection, calibrationIntensity);
+            double[] commanded = BuildCommandedRates(activeX, activeY, calibrationIntensity);
             commandedP = commanded[0];
             commandedQ = commanded[1];
             commandedR = commanded[2];
@@ -533,6 +566,46 @@ namespace VestibularJoystickSim
             inputY = connected ? y : 0.0;
         }
 
+        private void UpdateForzaInput()
+        {
+            if (!UseForzaPhysics())
+            {
+                forzaMotion = MotionSnapshot.Empty("Forza physics off");
+                forzaInputStatus = "Forza physics off";
+                return;
+            }
+
+            forzaMotion = forzaInput.Poll();
+            forzaInputStatus = forzaMotion.Source;
+        }
+
+        private double[] BuildCommandedRates(double activeX, double activeY, double calibrationIntensity)
+        {
+            if (calibrationDirection != 0)
+            {
+                return JoystickToCommandedRates(activeX, activeY, gain, calibrationDirection, calibrationIntensity);
+            }
+
+            double[] stickCommand = JoystickToCommandedRates(activeX, activeY, gain, 0, 0.0);
+            if (!UseForzaPhysics() || !forzaMotion.IsFresh)
+            {
+                return stickCommand;
+            }
+
+            double[] forzaCommand = PhysicsMotionToCommandedRates(forzaMotion, gain);
+            return new double[]
+            {
+                Clamp(stickCommand[0] + forzaCommand[0], -GvsMaxRate, GvsMaxRate),
+                Clamp(stickCommand[1] + forzaCommand[1], -GvsMaxRate, GvsMaxRate),
+                Clamp(stickCommand[2] + forzaCommand[2], -GvsMaxRate, GvsMaxRate)
+            };
+        }
+
+        private bool UseForzaPhysics()
+        {
+            return forzaPhysicsCheck != null && forzaPhysicsCheck.Checked;
+        }
+
         private void ArmButtonClick(object sender, EventArgs e)
         {
             if (serialPort == null || !serialPort.IsOpen)
@@ -696,7 +769,10 @@ namespace VestibularJoystickSim
         private void UpdateUi()
         {
             double intensity = Math.Min(1.0, Math.Sqrt(inputX * inputX + inputY * inputY));
-            inputLabel.Text = "Input: " + physicalInputSource + "   Yaw " + Math.Round(Math.Abs(inputX) * 100.0) +
+            string activeInput = UseForzaPhysics()
+                ? forzaInputStatus + " + " + physicalInputSource
+                : physicalInputSource;
+            inputLabel.Text = "Input: " + activeInput + "   Yaw " + Math.Round(Math.Abs(inputX) * 100.0) +
                 "%   Pitch " + Math.Round(Math.Abs(inputY) * 100.0) +
                 "%   Signal " + Math.Round(intensity * 100.0) + "%";
 
@@ -730,11 +806,12 @@ namespace VestibularJoystickSim
             headView.QRate = qRate;
             headView.RRate = rRate;
             headView.Invalidate();
-            stickView.VectorX = inputX;
-            stickView.VectorY = inputY;
-            stickView.Connected = physicalInputConnected;
+            bool forzaFresh = UseForzaPhysics() && forzaMotion.IsFresh;
+            stickView.VectorX = forzaFresh ? Clamp(commandedR / GvsMaxRate, -1.0, 1.0) : inputX;
+            stickView.VectorY = forzaFresh ? Clamp(commandedQ / GvsMaxRate, -1.0, 1.0) : inputY;
+            stickView.Connected = physicalInputConnected || forzaFresh;
             stickView.ControllerIndex = physicalInputIndex;
-            stickView.SourceName = physicalInputSource;
+            stickView.SourceName = activeInput;
             stickView.Invalidate();
         }
 
@@ -798,6 +875,21 @@ namespace VestibularJoystickSim
             combo.Height = 32;
             combo.Margin = new Padding(4, 6, 4, 4);
             return combo;
+        }
+
+        private static CheckBox MakeCheckBox(string text)
+        {
+            CheckBox checkBox = new CheckBox();
+            checkBox.Text = text;
+            checkBox.AutoSize = false;
+            checkBox.Width = 112;
+            checkBox.Height = 32;
+            checkBox.TextAlign = ContentAlignment.MiddleLeft;
+            checkBox.FlatStyle = FlatStyle.Flat;
+            checkBox.BackColor = Theme.Surface;
+            checkBox.ForeColor = Theme.Text;
+            checkBox.Margin = new Padding(4, 6, 4, 4);
+            return checkBox;
         }
 
         private static Button MakeButton(string text)
@@ -988,6 +1080,22 @@ namespace VestibularJoystickSim
             return new double[] { 0.0, pitch, yaw };
         }
 
+        private static double[] PhysicsMotionToCommandedRates(MotionSnapshot motion, double outputGain)
+        {
+            if (!motion.IsFresh)
+            {
+                return new double[] { 0.0, 0.0, 0.0 };
+            }
+
+            double safeGain = Clamp(outputGain, 0.0, MaxGain);
+            return new double[]
+            {
+                Clamp(motion.P * safeGain, -GvsMaxRate, GvsMaxRate),
+                Clamp(motion.Q * safeGain, -GvsMaxRate, GvsMaxRate),
+                Clamp(motion.R * safeGain, -GvsMaxRate, GvsMaxRate)
+            };
+        }
+
         private static double[] PqrToCodeMatrixCurrents(double p, double q, double r)
         {
             double weightedPitch = 1.5 * q;
@@ -1157,6 +1265,204 @@ namespace VestibularJoystickSim
             if (value < min) return min;
             if (value > max) return max;
             return value;
+        }
+    }
+
+    internal struct MotionSnapshot
+    {
+        private static readonly TimeSpan FreshWindow = TimeSpan.FromMilliseconds(900);
+
+        public bool Connected;
+        public DateTime TimestampUtc;
+        public string Source;
+        public double P;
+        public double Q;
+        public double R;
+        public double RollDeg;
+        public double PitchDeg;
+        public double YawDeg;
+
+        public bool IsFresh
+        {
+            get { return Connected && (DateTime.UtcNow - TimestampUtc) <= FreshWindow; }
+        }
+
+        public static MotionSnapshot Fresh(string source, double p, double q, double r, double rollDeg, double pitchDeg, double yawDeg)
+        {
+            MotionSnapshot snapshot = new MotionSnapshot();
+            snapshot.Connected = true;
+            snapshot.TimestampUtc = DateTime.UtcNow;
+            snapshot.Source = source;
+            snapshot.P = Sanitize(p);
+            snapshot.Q = Sanitize(q);
+            snapshot.R = Sanitize(r);
+            snapshot.RollDeg = Sanitize(rollDeg);
+            snapshot.PitchDeg = Sanitize(pitchDeg);
+            snapshot.YawDeg = Sanitize(yawDeg);
+            return snapshot;
+        }
+
+        public static MotionSnapshot Empty(string source)
+        {
+            MotionSnapshot snapshot = new MotionSnapshot();
+            snapshot.Connected = false;
+            snapshot.TimestampUtc = DateTime.MinValue;
+            snapshot.Source = source;
+            return snapshot;
+        }
+
+        private static double Sanitize(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+            {
+                return 0.0;
+            }
+
+            return value;
+        }
+    }
+
+    internal sealed class ForzaUdpTelemetryInput : IDisposable
+    {
+        private const int PrimaryPort = 5300;
+        private const int SecondaryPort = 5607;
+        private readonly List<UdpClient> clients = new List<UdpClient>();
+        private MotionSnapshot latest = MotionSnapshot.Empty("Forza waiting on UDP 5300/5607");
+        private bool started;
+        private string status = "Forza waiting on UDP 5300/5607";
+
+        public MotionSnapshot Poll()
+        {
+            EnsureStarted();
+
+            for (int i = 0; i < clients.Count; i++)
+            {
+                UdpClient client = clients[i];
+                while (client.Available > 0)
+                {
+                    IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+                    byte[] data = client.Receive(ref remote);
+                    MotionSnapshot parsed;
+                    if (TryParse(data, out parsed))
+                    {
+                        latest = parsed;
+                        status = parsed.Source;
+                    }
+                }
+            }
+
+            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
+        }
+
+        public static bool SelfTest()
+        {
+            byte[] packet = new byte[68];
+            WriteSingle(packet, 44, 0.2f);
+            WriteSingle(packet, 48, 0.3f);
+            WriteSingle(packet, 52, 0.1f);
+            WriteSingle(packet, 56, 0.4f);
+            WriteSingle(packet, 60, -0.2f);
+            WriteSingle(packet, 64, 0.1f);
+
+            MotionSnapshot motion;
+            return TryParse(packet, out motion) &&
+                   Math.Abs(motion.P - 0.1) < 0.0001 &&
+                   Math.Abs(motion.Q - 0.2) < 0.0001 &&
+                   Math.Abs(motion.R - 0.3) < 0.0001 &&
+                   Math.Abs(motion.RollDeg - (0.1 * 180.0 / Math.PI)) < 0.0001 &&
+                   Math.Abs(motion.PitchDeg - (-0.2 * 180.0 / Math.PI)) < 0.0001;
+        }
+
+        public void ResetStatus()
+        {
+            status = started ? "Forza waiting on UDP 5300/5607" : "Forza UDP not started";
+            latest = MotionSnapshot.Empty(status);
+        }
+
+        private void EnsureStarted()
+        {
+            if (started)
+            {
+                return;
+            }
+
+            started = true;
+            TryBind(PrimaryPort);
+            TryBind(SecondaryPort);
+
+            if (clients.Count == 0)
+            {
+                status = "Forza UDP bind failed";
+            }
+        }
+
+        private void TryBind(int port)
+        {
+            try
+            {
+                UdpClient client = new UdpClient();
+                client.ExclusiveAddressUse = false;
+                client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                client.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+                clients.Add(client);
+                status = "Forza waiting on UDP " + port.ToString();
+            }
+            catch
+            {
+                // Another telemetry app may own the port; keep any port that did bind.
+            }
+        }
+
+        private static bool TryParse(byte[] data, out MotionSnapshot motion)
+        {
+            motion = MotionSnapshot.Empty("Forza packet too short");
+            if (data == null || data.Length < 68)
+            {
+                return false;
+            }
+
+            float angularX = ReadSingle(data, 44);
+            float angularY = ReadSingle(data, 48);
+            float angularZ = ReadSingle(data, 52);
+            float yaw = ReadSingle(data, 56);
+            float pitch = ReadSingle(data, 60);
+            float roll = ReadSingle(data, 64);
+
+            motion = MotionSnapshot.Fresh(
+                "Forza UDP physics",
+                angularZ,
+                angularX,
+                angularY,
+                roll * 180.0 / Math.PI,
+                pitch * 180.0 / Math.PI,
+                yaw * 180.0 / Math.PI);
+            return true;
+        }
+
+        private static float ReadSingle(byte[] data, int offset)
+        {
+            if (offset + 4 > data.Length)
+            {
+                return 0.0f;
+            }
+
+            return BitConverter.ToSingle(data, offset);
+        }
+
+        private static void WriteSingle(byte[] data, int offset, float value)
+        {
+            byte[] bytes = BitConverter.GetBytes(value);
+            Array.Copy(bytes, 0, data, offset, bytes.Length);
+        }
+
+        public void Dispose()
+        {
+            for (int i = 0; i < clients.Count; i++)
+            {
+                clients[i].Close();
+            }
+
+            clients.Clear();
         }
     }
 

@@ -18,6 +18,7 @@ Native Windows VMocion/GVS controller prototype with a physical left-stick input
 - Sends legacy VMocion `gvs.py` UART packets: `AA len signal checksum 55`.
 - Uses the `gvs.py` P/Q/R matrix for vestibular output.
 - Reads physical stick input from XInput, Windows joystick/HID, keyboard-style mappings, and desktop pointer movement.
+- Optional `Forza physics` button blends Forza UDP physics with the controller joystick path.
 - Keeps the on-screen joystick out of the control path.
 
 ## Build
