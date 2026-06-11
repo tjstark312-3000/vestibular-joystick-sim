@@ -4,8 +4,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO.Ports;
 using System.Management;
-using System.Net;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -40,18 +38,13 @@ namespace VestibularJoystickSim
         private const double DefaultGain = 10.0;
         private const double MaxGain = 100000.0;
         private const double SerialSendIntervalSeconds = 0.025;
-        private const int MsfsSimConnectMessage = 0x0402;
 
         private readonly PhysicalStickView stickView;
         private readonly PhysicalJoystickInput physicalInput;
-        private readonly MsfsSimConnectInput msfsInput;
-        private readonly ForzaUdpTelemetryInput forzaInput;
         private readonly HeadView headView;
         private readonly Timer timer;
         private readonly ComboBox portCombo;
         private readonly ComboBox protocolCombo;
-        private readonly CheckBox msfsPhysicsCheck;
-        private readonly CheckBox forzaPhysicsCheck;
         private readonly Button connectButton;
         private readonly Button armButton;
         private readonly Button pauseButton;
@@ -91,10 +84,6 @@ namespace VestibularJoystickSim
         private bool physicalInputConnected;
         private int physicalInputIndex = -1;
         private string physicalInputSource = "No left stick";
-        private MotionSnapshot msfsMotion = MotionSnapshot.Empty("MSFS physics off");
-        private string msfsInputStatus = "MSFS physics off";
-        private MotionSnapshot forzaMotion = MotionSnapshot.Empty("Forza physics off");
-        private string forzaInputStatus = "Forza physics off";
         private double commandedP;
         private double commandedQ;
         private double commandedR;
@@ -121,14 +110,12 @@ namespace VestibularJoystickSim
             Font = new Font("Segoe UI", 9.0f);
             StartPosition = FormStartPosition.CenterScreen;
             physicalInput = new PhysicalJoystickInput();
-            msfsInput = new MsfsSimConnectInput(MsfsSimConnectMessage);
-            forzaInput = new ForzaUdpTelemetryInput();
 
             TableLayoutPanel root = new TableLayoutPanel();
             root.Dock = DockStyle.Fill;
             root.RowCount = 2;
             root.ColumnCount = 1;
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.Padding = new Padding(18);
             root.BackColor = Theme.Background;
@@ -180,34 +167,6 @@ namespace VestibularJoystickSim
             gainValueLabel = MakeSmallLabel(DefaultGain.ToString("0.00"));
             gainValueLabel.Width = 92;
             topControls.Controls.Add(gainValueLabel);
-
-            msfsPhysicsCheck = MakeCheckBox("MSFS physics");
-            msfsPhysicsCheck.CheckedChanged += delegate
-            {
-                if (msfsPhysicsCheck.Checked && forzaPhysicsCheck != null && forzaPhysicsCheck.Checked)
-                {
-                    forzaPhysicsCheck.Checked = false;
-                }
-
-                msfsInput.ResetStatus();
-                SendNeutralOutput();
-                UpdateUi();
-            };
-            topControls.Controls.Add(msfsPhysicsCheck);
-
-            forzaPhysicsCheck = MakeCheckBox("Forza physics");
-            forzaPhysicsCheck.CheckedChanged += delegate
-            {
-                if (forzaPhysicsCheck.Checked && msfsPhysicsCheck != null && msfsPhysicsCheck.Checked)
-                {
-                    msfsPhysicsCheck.Checked = false;
-                }
-
-                forzaInput.ResetStatus();
-                SendNeutralOutput();
-                UpdateUi();
-            };
-            topControls.Controls.Add(forzaPhysicsCheck);
 
             protocolCombo = MakeCombo();
             protocolCombo.Items.Add("Legacy gvs.py UART 9600");
@@ -353,36 +312,13 @@ namespace VestibularJoystickSim
                    PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 1.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.001, 0.0, 100000.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, GvsMaxRate }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
-                   PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Empty("MSFS off"), 100000.0), new double[] { 0.0, 0.0, 0.0 }) &&
-                   PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
-                   PacketValuesEqual(MsfsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
-                   PacketValuesEqual(MsfsControlToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, -0.25), 1.0), new double[] { 0.0, -GvsMaxRate * 0.25, GvsMaxRate * 0.5 }) &&
-                   PacketValuesEqual(MsfsControlToCommandedRates(MotionSnapshot.Fresh("MSFS", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, -2.0), 1.0), new double[] { 0.0, -GvsMaxRate, GvsMaxRate }) &&
-                   Math.Abs(NormalizeMsfsControlPosition(16384.0) - 1.0) < 0.0001 &&
-                   Math.Abs(NormalizeMsfsControlPosition(-16384.0) + 1.0) < 0.0001 &&
-                   Math.Abs(NormalizeMsfsControlPosition(0.5) - 0.5) < 0.0001 &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
-                   ForzaUdpTelemetryInput.SelfTest();
+                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 });
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             SafeDisarmAndClose();
-            forzaInput.Dispose();
-            msfsInput.Dispose();
             base.OnFormClosing(e);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            if (msfsInput != null)
-            {
-                msfsInput.HandleWindowMessage(m.Msg);
-            }
-
-            base.WndProc(ref m);
         }
 
         private void TimerTick(object sender, EventArgs e)
@@ -391,37 +327,13 @@ namespace VestibularJoystickSim
             double dt = Math.Min((now - lastTick).TotalSeconds, 0.05);
             lastTick = now;
             UpdatePhysicalStickInput();
-            UpdateMsfsInput();
-            UpdateForzaInput();
 
             if (!paused)
             {
                 double visualGain = Math.Min(gain, 4.0);
-                double targetYaw;
-                double targetPitch;
-                double targetRoll;
-                if (UseMsfsPhysics() && msfsMotion.IsFresh)
-                {
-                    double controlX = ActiveControlX();
-                    double controlY = ActiveControlY();
-                    targetYaw = Clamp((msfsMotion.R * 42.0) + (controlX * 20.0 * visualGain), -65.0, 65.0);
-                    targetPitch = Clamp(msfsMotion.PitchDeg + (controlY * 14.0 * visualGain), -55.0, 55.0);
-                    targetRoll = Clamp(msfsMotion.RollDeg + (controlX * 8.0 * visualGain), -28.0, 28.0);
-                }
-                else if (UseForzaPhysics() && forzaMotion.IsFresh)
-                {
-                    double controlX = ApplyDeadzone(inputX);
-                    double controlY = ApplyDeadzone(inputY);
-                    targetYaw = Clamp((forzaMotion.R * 42.0) + (controlX * 20.0 * visualGain), -65.0, 65.0);
-                    targetPitch = Clamp(forzaMotion.PitchDeg + (controlY * 14.0 * visualGain), -55.0, 55.0);
-                    targetRoll = Clamp(forzaMotion.RollDeg + (controlX * 8.0 * visualGain), -28.0, 28.0);
-                }
-                else
-                {
-                    targetYaw = Clamp(ApplyDeadzone(inputX) * 48.0 * visualGain, -65.0, 65.0);
-                    targetPitch = Clamp(ApplyDeadzone(inputY) * 38.0 * visualGain, -55.0, 55.0);
-                    targetRoll = Clamp(ApplyDeadzone(inputX) * 16.0 * visualGain, -28.0, 28.0);
-                }
+                double targetYaw = Clamp(ApplyDeadzone(inputX) * 48.0 * visualGain, -65.0, 65.0);
+                double targetPitch = Clamp(ApplyDeadzone(inputY) * 38.0 * visualGain, -55.0, 55.0);
+                double targetRoll = Clamp(ApplyDeadzone(inputX) * 16.0 * visualGain, -28.0, 28.0);
                 double response = 1.0 - Math.Pow(0.001, dt);
 
                 yaw = Lerp(yaw, targetYaw, response);
@@ -440,7 +352,7 @@ namespace VestibularJoystickSim
             double activeY = paused ? 0.0 : ApplyDeadzone(inputY);
             double calibrationIntensity = GetCalibrationIntensity();
 
-            double[] commanded = BuildCommandedRates(activeX, activeY, calibrationIntensity);
+            double[] commanded = JoystickToCommandedRates(activeX, activeY, gain, calibrationDirection, calibrationIntensity);
             commandedP = commanded[0];
             commandedQ = commanded[1];
             commandedR = commanded[2];
@@ -621,96 +533,6 @@ namespace VestibularJoystickSim
             inputY = connected ? y : 0.0;
         }
 
-        private void UpdateMsfsInput()
-        {
-            if (!UseMsfsPhysics())
-            {
-                msfsMotion = MotionSnapshot.Empty("MSFS physics off");
-                msfsInputStatus = "MSFS physics off";
-                return;
-            }
-
-            msfsMotion = msfsInput.Poll(Handle);
-            msfsInputStatus = msfsMotion.Source;
-        }
-
-        private void UpdateForzaInput()
-        {
-            if (!UseForzaPhysics())
-            {
-                forzaMotion = MotionSnapshot.Empty("Forza physics off");
-                forzaInputStatus = "Forza physics off";
-                return;
-            }
-
-            forzaMotion = forzaInput.Poll();
-            forzaInputStatus = forzaMotion.Source;
-        }
-
-        private double[] BuildCommandedRates(double activeX, double activeY, double calibrationIntensity)
-        {
-            if (calibrationDirection != 0)
-            {
-                return JoystickToCommandedRates(activeX, activeY, gain, calibrationDirection, calibrationIntensity);
-            }
-
-            double[] stickCommand = JoystickToCommandedRates(activeX, activeY, gain, 0, 0.0);
-            if (UseMsfsPhysics() && msfsMotion.IsFresh)
-            {
-                double[] controlCommand = msfsMotion.HasControls ? MsfsControlToCommandedRates(msfsMotion, gain) : stickCommand;
-                double[] msfsCommand = MsfsMotionToCommandedRates(msfsMotion, gain);
-                return new double[]
-                {
-                    Clamp(controlCommand[0] + msfsCommand[0], -GvsMaxRate, GvsMaxRate),
-                    Clamp(controlCommand[1] + msfsCommand[1], -GvsMaxRate, GvsMaxRate),
-                    Clamp(controlCommand[2] + msfsCommand[2], -GvsMaxRate, GvsMaxRate)
-                };
-            }
-
-            if (UseForzaPhysics() && forzaMotion.IsFresh)
-            {
-                double[] forzaCommand = PhysicsMotionToCommandedRates(forzaMotion, gain);
-                return new double[]
-                {
-                    Clamp(stickCommand[0] + forzaCommand[0], -GvsMaxRate, GvsMaxRate),
-                    Clamp(stickCommand[1] + forzaCommand[1], -GvsMaxRate, GvsMaxRate),
-                    Clamp(stickCommand[2] + forzaCommand[2], -GvsMaxRate, GvsMaxRate)
-                };
-            }
-
-            return stickCommand;
-        }
-
-        private bool UseMsfsPhysics()
-        {
-            return msfsPhysicsCheck != null && msfsPhysicsCheck.Checked;
-        }
-
-        private bool UseForzaPhysics()
-        {
-            return forzaPhysicsCheck != null && forzaPhysicsCheck.Checked;
-        }
-
-        private double ActiveControlX()
-        {
-            if (UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls)
-            {
-                return ApplyDeadzone(msfsMotion.ControlX);
-            }
-
-            return ApplyDeadzone(inputX);
-        }
-
-        private double ActiveControlY()
-        {
-            if (UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls)
-            {
-                return ApplyDeadzone(msfsMotion.ControlY);
-            }
-
-            return ApplyDeadzone(inputY);
-        }
-
         private void ArmButtonClick(object sender, EventArgs e)
         {
             if (serialPort == null || !serialPort.IsOpen)
@@ -873,21 +695,9 @@ namespace VestibularJoystickSim
 
         private void UpdateUi()
         {
-            double displayX = ActiveControlX();
-            double displayY = ActiveControlY();
-            double intensity = Math.Min(1.0, Math.Sqrt(displayX * displayX + displayY * displayY));
-            string controlSource = UseMsfsPhysics() && msfsMotion.IsFresh && msfsMotion.HasControls ? "MSFS controls" : physicalInputSource;
-            string activeInput = controlSource;
-            if (UseMsfsPhysics())
-            {
-                activeInput = msfsInputStatus + " + " + controlSource;
-            }
-            else if (UseForzaPhysics())
-            {
-                activeInput = forzaInputStatus + " + " + physicalInputSource;
-            }
-            inputLabel.Text = "Input: " + activeInput + "   Yaw " + Math.Round(Math.Abs(displayX) * 100.0) +
-                "%   Pitch " + Math.Round(Math.Abs(displayY) * 100.0) +
+            double intensity = Math.Min(1.0, Math.Sqrt(inputX * inputX + inputY * inputY));
+            inputLabel.Text = "Input: " + physicalInputSource + "   Yaw " + Math.Round(Math.Abs(inputX) * 100.0) +
+                "%   Pitch " + Math.Round(Math.Abs(inputY) * 100.0) +
                 "%   Signal " + Math.Round(intensity * 100.0) + "%";
 
             yawLabel.Text = "Yaw: " + yaw.ToString("0.0") + " deg";
@@ -920,12 +730,11 @@ namespace VestibularJoystickSim
             headView.QRate = qRate;
             headView.RRate = rRate;
             headView.Invalidate();
-            bool gamePhysicsFresh = (UseMsfsPhysics() && msfsMotion.IsFresh) || (UseForzaPhysics() && forzaMotion.IsFresh);
-            stickView.VectorX = gamePhysicsFresh ? Clamp(commandedR / GvsMaxRate, -1.0, 1.0) : displayX;
-            stickView.VectorY = gamePhysicsFresh ? Clamp(commandedQ / GvsMaxRate, -1.0, 1.0) : displayY;
-            stickView.Connected = physicalInputConnected || gamePhysicsFresh;
+            stickView.VectorX = inputX;
+            stickView.VectorY = inputY;
+            stickView.Connected = physicalInputConnected;
             stickView.ControllerIndex = physicalInputIndex;
-            stickView.SourceName = activeInput;
+            stickView.SourceName = physicalInputSource;
             stickView.Invalidate();
         }
 
@@ -989,21 +798,6 @@ namespace VestibularJoystickSim
             combo.Height = 32;
             combo.Margin = new Padding(4, 6, 4, 4);
             return combo;
-        }
-
-        private static CheckBox MakeCheckBox(string text)
-        {
-            CheckBox checkBox = new CheckBox();
-            checkBox.Text = text;
-            checkBox.AutoSize = false;
-            checkBox.Width = 112;
-            checkBox.Height = 32;
-            checkBox.TextAlign = ContentAlignment.MiddleLeft;
-            checkBox.FlatStyle = FlatStyle.Flat;
-            checkBox.BackColor = Theme.Surface;
-            checkBox.ForeColor = Theme.Text;
-            checkBox.Margin = new Padding(4, 6, 4, 4);
-            return checkBox;
         }
 
         private static Button MakeButton(string text)
@@ -1194,51 +988,6 @@ namespace VestibularJoystickSim
             return new double[] { 0.0, pitch, yaw };
         }
 
-        private static double[] MsfsMotionToCommandedRates(MotionSnapshot motion, double outputGain)
-        {
-            return PhysicsMotionToCommandedRates(motion, outputGain);
-        }
-
-        private static double[] PhysicsMotionToCommandedRates(MotionSnapshot motion, double outputGain)
-        {
-            if (!motion.IsFresh)
-            {
-                return new double[] { 0.0, 0.0, 0.0 };
-            }
-
-            double safeGain = Clamp(outputGain, 0.0, MaxGain);
-            return new double[]
-            {
-                Clamp(motion.P * safeGain, -GvsMaxRate, GvsMaxRate),
-                Clamp(motion.Q * safeGain, -GvsMaxRate, GvsMaxRate),
-                Clamp(motion.R * safeGain, -GvsMaxRate, GvsMaxRate)
-            };
-        }
-
-        private static double[] MsfsControlToCommandedRates(MotionSnapshot motion, double outputGain)
-        {
-            if (!motion.IsFresh || !motion.HasControls)
-            {
-                return new double[] { 0.0, 0.0, 0.0 };
-            }
-
-            double safeGain = Clamp(outputGain, 0.0, MaxGain);
-            double yaw = Clamp(motion.ControlX * GvsMaxRate * safeGain, -GvsMaxRate, GvsMaxRate);
-            double pitch = Clamp(motion.ControlY * GvsMaxRate * safeGain, -GvsMaxRate, GvsMaxRate);
-            return new double[] { 0.0, pitch, yaw };
-        }
-
-        internal static double NormalizeMsfsControlPosition(double value)
-        {
-            double sanitized = Clamp(value, -16384.0, 16384.0);
-            if (Math.Abs(sanitized) <= 1.0)
-            {
-                return sanitized;
-            }
-
-            return Clamp(sanitized / 16384.0, -1.0, 1.0);
-        }
-
         private static double[] PqrToCodeMatrixCurrents(double p, double q, double r)
         {
             double weightedPitch = 1.5 * q;
@@ -1409,434 +1158,6 @@ namespace VestibularJoystickSim
             if (value > max) return max;
             return value;
         }
-    }
-
-    internal struct MotionSnapshot
-    {
-        private static readonly TimeSpan FreshWindow = TimeSpan.FromMilliseconds(900);
-
-        public bool Connected;
-        public DateTime TimestampUtc;
-        public string Source;
-        public double P;
-        public double Q;
-        public double R;
-        public double RollDeg;
-        public double PitchDeg;
-        public double YawDeg;
-        public bool HasControls;
-        public double ControlX;
-        public double ControlY;
-
-        public bool IsFresh
-        {
-            get { return Connected && (DateTime.UtcNow - TimestampUtc) <= FreshWindow; }
-        }
-
-        public static MotionSnapshot Fresh(string source, double p, double q, double r, double rollDeg, double pitchDeg, double yawDeg)
-        {
-            MotionSnapshot snapshot = new MotionSnapshot();
-            snapshot.Connected = true;
-            snapshot.TimestampUtc = DateTime.UtcNow;
-            snapshot.Source = source;
-            snapshot.P = Sanitize(p);
-            snapshot.Q = Sanitize(q);
-            snapshot.R = Sanitize(r);
-            snapshot.RollDeg = Sanitize(rollDeg);
-            snapshot.PitchDeg = Sanitize(pitchDeg);
-            snapshot.YawDeg = Sanitize(yawDeg);
-            return snapshot;
-        }
-
-        public static MotionSnapshot Fresh(string source, double p, double q, double r, double rollDeg, double pitchDeg, double yawDeg, double controlX, double controlY)
-        {
-            MotionSnapshot snapshot = Fresh(source, p, q, r, rollDeg, pitchDeg, yawDeg);
-            snapshot.HasControls = true;
-            snapshot.ControlX = Sanitize(controlX);
-            snapshot.ControlY = Sanitize(controlY);
-            return snapshot;
-        }
-
-        public static MotionSnapshot Empty(string source)
-        {
-            MotionSnapshot snapshot = new MotionSnapshot();
-            snapshot.Connected = false;
-            snapshot.TimestampUtc = DateTime.MinValue;
-            snapshot.Source = source;
-            return snapshot;
-        }
-
-        private static double Sanitize(double value)
-        {
-            if (double.IsNaN(value) || double.IsInfinity(value))
-            {
-                return 0.0;
-            }
-
-            return value;
-        }
-    }
-
-    internal sealed class ForzaUdpTelemetryInput : IDisposable
-    {
-        private const int PrimaryPort = 5300;
-        private const int SecondaryPort = 5607;
-        private readonly List<UdpClient> clients = new List<UdpClient>();
-        private MotionSnapshot latest = MotionSnapshot.Empty("Forza waiting on UDP 5300/5607");
-        private bool started;
-        private string status = "Forza waiting on UDP 5300/5607";
-
-        public MotionSnapshot Poll()
-        {
-            EnsureStarted();
-
-            for (int i = 0; i < clients.Count; i++)
-            {
-                UdpClient client = clients[i];
-                while (client.Available > 0)
-                {
-                    IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
-                    byte[] data = client.Receive(ref remote);
-                    MotionSnapshot parsed;
-                    if (TryParse(data, out parsed))
-                    {
-                        latest = parsed;
-                        status = parsed.Source;
-                    }
-                }
-            }
-
-            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
-        }
-
-        public static bool SelfTest()
-        {
-            byte[] packet = new byte[68];
-            WriteSingle(packet, 44, 0.2f);
-            WriteSingle(packet, 48, 0.3f);
-            WriteSingle(packet, 52, 0.1f);
-            WriteSingle(packet, 56, 0.4f);
-            WriteSingle(packet, 60, -0.2f);
-            WriteSingle(packet, 64, 0.1f);
-
-            MotionSnapshot motion;
-            return TryParse(packet, out motion) &&
-                   Math.Abs(motion.P - 0.1) < 0.0001 &&
-                   Math.Abs(motion.Q - 0.2) < 0.0001 &&
-                   Math.Abs(motion.R - 0.3) < 0.0001 &&
-                   Math.Abs(motion.RollDeg - (0.1 * 180.0 / Math.PI)) < 0.0001 &&
-                   Math.Abs(motion.PitchDeg - (-0.2 * 180.0 / Math.PI)) < 0.0001;
-        }
-
-        public void ResetStatus()
-        {
-            status = started ? "Forza waiting on UDP 5300/5607" : "Forza UDP not started";
-            latest = MotionSnapshot.Empty(status);
-        }
-
-        private void EnsureStarted()
-        {
-            if (started)
-            {
-                return;
-            }
-
-            started = true;
-            TryBind(PrimaryPort);
-            TryBind(SecondaryPort);
-
-            if (clients.Count == 0)
-            {
-                status = "Forza UDP bind failed";
-            }
-        }
-
-        private void TryBind(int port)
-        {
-            try
-            {
-                UdpClient client = new UdpClient();
-                client.ExclusiveAddressUse = false;
-                client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                client.Client.Bind(new IPEndPoint(IPAddress.Any, port));
-                clients.Add(client);
-                status = "Forza waiting on UDP " + port.ToString();
-            }
-            catch
-            {
-                // Another telemetry app may own the port; keep any port that did bind.
-            }
-        }
-
-        private static bool TryParse(byte[] data, out MotionSnapshot motion)
-        {
-            motion = MotionSnapshot.Empty("Forza packet too short");
-            if (data == null || data.Length < 68)
-            {
-                return false;
-            }
-
-            float angularX = ReadSingle(data, 44);
-            float angularY = ReadSingle(data, 48);
-            float angularZ = ReadSingle(data, 52);
-            float yaw = ReadSingle(data, 56);
-            float pitch = ReadSingle(data, 60);
-            float roll = ReadSingle(data, 64);
-
-            motion = MotionSnapshot.Fresh(
-                "Forza UDP physics",
-                angularZ,
-                angularX,
-                angularY,
-                roll * 180.0 / Math.PI,
-                pitch * 180.0 / Math.PI,
-                yaw * 180.0 / Math.PI);
-            return true;
-        }
-
-        private static float ReadSingle(byte[] data, int offset)
-        {
-            if (offset + 4 > data.Length)
-            {
-                return 0.0f;
-            }
-
-            return BitConverter.ToSingle(data, offset);
-        }
-
-        private static void WriteSingle(byte[] data, int offset, float value)
-        {
-            byte[] bytes = BitConverter.GetBytes(value);
-            Array.Copy(bytes, 0, data, offset, bytes.Length);
-        }
-
-        public void Dispose()
-        {
-            for (int i = 0; i < clients.Count; i++)
-            {
-                clients[i].Close();
-            }
-
-            clients.Clear();
-        }
-    }
-
-    internal sealed class MsfsSimConnectInput : IDisposable
-    {
-        private const uint SimConnectObjectIdUser = 0;
-        private const uint SimConnectUnused = 0xffffffff;
-        private const uint DefinitionMotion = 1;
-        private const uint RequestMotion = 1;
-        private const uint SimConnectDatatypeFloat64 = 4;
-        private const uint SimConnectPeriodSimFrame = 3;
-        private const uint SimConnectDataRequestFlagDefault = 0;
-        private const uint SimConnectRecvIdSimobjectData = 8;
-        private const int SimobjectDataOffset = 40;
-        private const int MotionDataBytes = 40;
-
-        private readonly int windowMessage;
-        private readonly DispatchProc dispatchProc;
-        private IntPtr handle = IntPtr.Zero;
-        private DateTime lastConnectAttempt = DateTime.MinValue;
-        private MotionSnapshot latest = MotionSnapshot.Empty("MSFS waiting for SimConnect");
-        private string status = "MSFS waiting for SimConnect";
-        private bool definitionsRegistered;
-
-        public MsfsSimConnectInput(int msfsWindowMessage)
-        {
-            windowMessage = msfsWindowMessage;
-            dispatchProc = Dispatch;
-        }
-
-        public MotionSnapshot Poll(IntPtr windowHandle)
-        {
-            EnsureConnected(windowHandle);
-            if (handle != IntPtr.Zero)
-            {
-                try
-                {
-                    SimConnect_CallDispatch(handle, dispatchProc, IntPtr.Zero);
-                }
-                catch
-                {
-                    Close();
-                    status = "MSFS SimConnect disconnected";
-                }
-            }
-
-            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
-        }
-
-        public void HandleWindowMessage(int message)
-        {
-            if (message != windowMessage || handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            try
-            {
-                SimConnect_CallDispatch(handle, dispatchProc, IntPtr.Zero);
-            }
-            catch
-            {
-                Close();
-                status = "MSFS SimConnect disconnected";
-            }
-        }
-
-        public void ResetStatus()
-        {
-            status = handle == IntPtr.Zero ? "MSFS waiting for SimConnect" : "MSFS SimConnect connected";
-            latest = MotionSnapshot.Empty(status);
-        }
-
-        private void EnsureConnected(IntPtr windowHandle)
-        {
-            if (handle != IntPtr.Zero)
-            {
-                return;
-            }
-
-            if ((DateTime.UtcNow - lastConnectAttempt).TotalSeconds < 2.0)
-            {
-                return;
-            }
-
-            lastConnectAttempt = DateTime.UtcNow;
-            IntPtr simConnect;
-            try
-            {
-                int hr = SimConnect_Open(out simConnect, "Vestibular Joystick Simulation", windowHandle, (uint)windowMessage, IntPtr.Zero, 0);
-                if (hr != 0 || simConnect == IntPtr.Zero)
-                {
-                    status = "MSFS waiting for simulator";
-                    return;
-                }
-
-                handle = simConnect;
-                RegisterDefinitions();
-                status = "MSFS SimConnect connected";
-            }
-            catch (DllNotFoundException)
-            {
-                status = "MSFS SimConnect.dll missing";
-                Close();
-            }
-            catch
-            {
-                status = "MSFS SimConnect failed";
-                Close();
-            }
-        }
-
-        private void RegisterDefinitions()
-        {
-            if (definitionsRegistered || handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            AddDouble("ROTATION VELOCITY BODY X", "Feet per second");
-            AddDouble("ROTATION VELOCITY BODY Y", "Feet per second");
-            AddDouble("ROTATION VELOCITY BODY Z", "Feet per second");
-            AddDouble("AILERON POSITION", "Position");
-            AddDouble("ELEVATOR POSITION", "Position");
-
-            int hr = SimConnect_RequestDataOnSimObject(
-                handle,
-                RequestMotion,
-                DefinitionMotion,
-                SimConnectObjectIdUser,
-                SimConnectPeriodSimFrame,
-                SimConnectDataRequestFlagDefault,
-                0,
-                0,
-                0);
-            if (hr != 0)
-            {
-                throw new InvalidOperationException("SimConnect request failed.");
-            }
-
-            definitionsRegistered = true;
-        }
-
-        private void AddDouble(string name, string units)
-        {
-            int hr = SimConnect_AddToDataDefinition(handle, DefinitionMotion, name, units, SimConnectDatatypeFloat64, 0.0f, SimConnectUnused);
-            if (hr != 0)
-            {
-                throw new InvalidOperationException("SimConnect definition failed: " + name);
-            }
-        }
-
-        private void Dispatch(IntPtr data, uint cbData, IntPtr context)
-        {
-            if (data == IntPtr.Zero || cbData < SimobjectDataOffset + MotionDataBytes)
-            {
-                return;
-            }
-
-            uint receiveId = (uint)Marshal.ReadInt32(data, 0);
-            if (receiveId != SimConnectRecvIdSimobjectData)
-            {
-                return;
-            }
-
-            double bodyX = ReadDouble(data, SimobjectDataOffset);
-            double bodyY = ReadDouble(data, SimobjectDataOffset + 8);
-            double bodyZ = ReadDouble(data, SimobjectDataOffset + 16);
-            double aileron = MainForm.NormalizeMsfsControlPosition(ReadDouble(data, SimobjectDataOffset + 24));
-            double elevator = MainForm.NormalizeMsfsControlPosition(ReadDouble(data, SimobjectDataOffset + 32));
-            latest = MotionSnapshot.Fresh("MSFS controls + physics", bodyY, bodyX, bodyZ, 0.0, 0.0, 0.0, aileron, elevator);
-            status = latest.Source;
-        }
-
-        private static double ReadDouble(IntPtr pointer, int offset)
-        {
-            byte[] bytes = new byte[8];
-            Marshal.Copy(IntPtr.Add(pointer, offset), bytes, 0, bytes.Length);
-            return BitConverter.ToDouble(bytes, 0);
-        }
-
-        private void Close()
-        {
-            if (handle != IntPtr.Zero)
-            {
-                try
-                {
-                    SimConnect_Close(handle);
-                }
-                catch
-                {
-                }
-            }
-
-            handle = IntPtr.Zero;
-            definitionsRegistered = false;
-        }
-
-        public void Dispose()
-        {
-            Close();
-        }
-
-        private delegate void DispatchProc(IntPtr data, uint cbData, IntPtr context);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
-        private static extern int SimConnect_Open(out IntPtr phSimConnect, string name, IntPtr hWnd, uint userEventWin32, IntPtr hEventHandle, uint configIndex);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_Close(IntPtr hSimConnect);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
-        private static extern int SimConnect_AddToDataDefinition(IntPtr hSimConnect, uint defineId, string datumName, string unitsName, uint datumType, float epsilon, uint datumId);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_RequestDataOnSimObject(IntPtr hSimConnect, uint requestId, uint defineId, uint objectId, uint period, uint flags, uint origin, uint interval, uint limit);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_CallDispatch(IntPtr hSimConnect, DispatchProc dispatchProc, IntPtr context);
     }
 
     internal sealed class PhysicalJoystickInput
