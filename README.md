@@ -2,6 +2,10 @@
 
 Native Windows VMocion/GVS controller prototype with a physical left-stick input path and legacy `gvs.py` serial output.
 
+## Download
+
+[Download the latest Windows ZIP](https://github.com/tjstark312-3000/vestibular-joystick-sim/releases/latest/download/VestibularJoystickSim-windows.zip)
+
 ## Included
 
 - `outputs/vestibular-joystick-sim/VestibularJoystickSim.exe` - restored first-uploaded executable.
@@ -17,6 +21,7 @@ Native Windows VMocion/GVS controller prototype with a physical left-stick input
 - Uses COM serial output at `9600` baud.
 - Sends legacy VMocion `gvs.py` UART packets: `AA len signal checksum 55`.
 - Uses the `gvs.py` P/Q/R matrix for vestibular output.
+- The `Peak mA` slider limits channel current from `0.00` to `2.50 mA`; the default startup value is `0.50 mA` for gentler first-time testing.
 - Reads physical stick input from XInput, Windows joystick/HID, keyboard-style mappings, and desktop pointer movement.
 - Optional `Forza physics` button blends Forza UDP physics with the controller joystick path.
 - Keeps the on-screen joystick out of the control path.

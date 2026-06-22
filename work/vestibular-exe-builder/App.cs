@@ -36,9 +36,9 @@ namespace VestibularJoystickSim
         private const double GvsMaxRate = 3.14 / 4.0;
         private const double GvsMaxRamp = 0.03;
         private const double PacketValueToVolts = 0.15;
-        private const double GvsMaxCurrentMilliamp = 2.0;
-        private const double DefaultGain = 10.0;
-        private const double MaxGain = 100000.0;
+        private const double MaxCurrentPeakMilliamp = 2.5;
+        private const double DefaultCurrentPeakMilliamp = 0.5;
+        private const int CurrentPeakSliderScale = 100;
         private const double SerialSendIntervalSeconds = 0.025;
         private const int MsfsSimConnectMessage = 0x0402;
 
@@ -100,9 +100,10 @@ namespace VestibularJoystickSim
         private double commandedR;
         private readonly double[] packetValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
         private readonly int[] currentBytes = new int[] { 128, 128, 128, 128 };
+        private readonly double[] currentMilliampValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
         private readonly double[] dacValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
         private string lastPacketText = "-";
-        private double gain = DefaultGain;
+        private double currentPeakMilliamp = DefaultCurrentPeakMilliamp;
         private bool paused;
         private bool armed;
         private int packetCount;
@@ -166,19 +167,21 @@ namespace VestibularJoystickSim
             topControls.Padding = new Padding(0);
             top.Controls.Add(topControls);
 
-            topControls.Controls.Add(MakeSmallLabel("Gain"));
+            topControls.Controls.Add(MakeSmallLabel("Peak mA"));
             gainSlider = new TrackBar();
-            gainSlider.Minimum = 50;
-            gainSlider.Maximum = (int)(MaxGain * 100.0);
-            gainSlider.Value = (int)(DefaultGain * 100.0);
-            gainSlider.TickFrequency = 1000000;
-            gainSlider.Width = 130;
+            gainSlider.Minimum = 0;
+            gainSlider.Maximum = (int)(MaxCurrentPeakMilliamp * CurrentPeakSliderScale);
+            gainSlider.Value = (int)(DefaultCurrentPeakMilliamp * CurrentPeakSliderScale);
+            gainSlider.TickFrequency = 25;
+            gainSlider.SmallChange = 1;
+            gainSlider.LargeChange = 25;
+            gainSlider.Width = 150;
             gainSlider.BackColor = Theme.Surface;
             gainSlider.Scroll += GainSliderScroll;
             topControls.Controls.Add(gainSlider);
 
-            gainValueLabel = MakeSmallLabel(DefaultGain.ToString("0.00"));
-            gainValueLabel.Width = 92;
+            gainValueLabel = MakeSmallLabel(FormatCurrentPeakLabel(DefaultCurrentPeakMilliamp));
+            gainValueLabel.Width = 110;
             topControls.Controls.Add(gainValueLabel);
 
             msfsPhysicsCheck = MakeCheckBox("MSFS physics");
@@ -328,26 +331,26 @@ namespace VestibularJoystickSim
 
         public static bool SelfTest()
         {
-            return IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, 0.0)), new int[] { 128, 128, 128, 128 }) &&
+            return IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 128, 128, 128, 128 }) &&
                    PacketValuesEqual(CurrentBytesToDacVolts(new int[] { 128, 128, 128, 128 }), new double[] { 0.0, 0.0, 0.0, 0.0 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0)), new int[] { 28, 28, 228, 228 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, GvsMaxRate, 0.0)), new int[] { 228, 28, 28, 228 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, GvsMaxRate)), new int[] { 28, 228, 28, 228 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(-GvsMaxRate, 0.0, 0.0)), new int[] { 228, 228, 28, 28 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, -GvsMaxRate, 0.0)), new int[] { 28, 228, 228, 28 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, -GvsMaxRate)), new int[] { 228, 28, 228, 28 }) &&
-                   PacketValuesEqual(CurrentBytesToPacketValues(new int[] { 28, 28, 228, 228 }), new double[] { -100.0, -100.0, 100.0, 100.0 }) &&
-                   PacketValuesEqual(CurrentBytesToDacVolts(new int[] { 28, 28, 228, 228 }), new double[] { -15.0, -15.0, 15.0, 15.0 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 1.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 1.0, 1.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, 0.0 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 1.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.001, 0.0, 100000.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(1.0, 1.0, 100000.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, GvsMaxRate }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0), 1.0), new double[] { 0.1, 0.2, 0.3 }) &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0), 1.0), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Empty("MSFS off"), 100000.0), new double[] { 0.0, 0.0, 0.0 }) &&
-                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", -0.1, 0.2, -0.3, 0.0, 0.0, 0.0), 1.0), new double[] { -0.1, 0.2, -0.3 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 3, 3, 253, 253 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, GvsMaxRate, 0.0, MaxCurrentPeakMilliamp)), new int[] { 253, 3, 3, 253 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, GvsMaxRate, MaxCurrentPeakMilliamp)), new int[] { 3, 253, 3, 253 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(-GvsMaxRate, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 253, 253, 3, 3 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, -GvsMaxRate, 0.0, MaxCurrentPeakMilliamp)), new int[] { 3, 253, 253, 3 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, -GvsMaxRate, MaxCurrentPeakMilliamp)), new int[] { 253, 3, 253, 3 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, 0.0)), new int[] { 128, 128, 128, 128 }) &&
+                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, 1.25)), new int[] { 65, 65, 190, 190 }) &&
+                   PacketValuesEqual(CurrentBytesToPacketValues(new int[] { 3, 3, 253, 253 }), new double[] { -125.0, -125.0, 125.0, 125.0 }) &&
+                   PacketValuesEqual(CurrentBytesToDacVolts(new int[] { 3, 3, 253, 253 }), new double[] { -18.75, -18.75, 18.75, 18.75 }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(0.0, 1.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, 0.0 }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0)), new double[] { 0.1, 0.2, 0.3 }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0)), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Empty("MSFS off")), new double[] { 0.0, 0.0, 0.0 }) &&
+                   PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("MSFS", -0.1, 0.2, -0.3, 0.0, 0.0, 0.0)), new double[] { -0.1, 0.2, -0.3 }) &&
                    ForzaUdpTelemetryInput.SelfTest();
         }
 
@@ -380,7 +383,7 @@ namespace VestibularJoystickSim
 
             if (!paused)
             {
-                double visualGain = Math.Min(gain, 4.0);
+                double visualGain = Clamp(currentPeakMilliamp / MaxCurrentPeakMilliamp, 0.0, 1.0);
                 double targetYaw;
                 double targetPitch;
                 double targetRoll;
@@ -425,7 +428,7 @@ namespace VestibularJoystickSim
             qRate += Clamp(headPqr[1] - qRate, -GvsMaxRamp, GvsMaxRamp);
             rRate += Clamp(headPqr[2] - rRate, -GvsMaxRamp, GvsMaxRamp);
 
-            double[] currents = PqrToCodeMatrixCurrents(pRate, qRate, rRate);
+            double[] currents = PqrToCodeMatrixCurrents(pRate, qRate, rRate, currentPeakMilliamp);
             int[] bytes = CurrentsToUartBytes(currents);
             double[] values = CurrentBytesToPacketValues(bytes);
             double[] volts = CurrentBytesToDacVolts(bytes);
@@ -433,6 +436,7 @@ namespace VestibularJoystickSim
             {
                 packetValues[i] = values[i];
                 currentBytes[i] = bytes[i];
+                currentMilliampValues[i] = currents[i];
                 dacValues[i] = volts[i];
             }
         }
@@ -484,6 +488,7 @@ namespace VestibularJoystickSim
             {
                 packetValues[i] = 0.0;
                 currentBytes[i] = 128;
+                currentMilliampValues[i] = 0.0;
                 dacValues[i] = 0.0;
             }
             commandedP = 0.0;
@@ -626,20 +631,20 @@ namespace VestibularJoystickSim
         {
             if (calibrationDirection != 0)
             {
-                return JoystickToCommandedRates(activeX, activeY, gain, calibrationDirection, calibrationIntensity);
+                return JoystickToCommandedRates(activeX, activeY, calibrationDirection, calibrationIntensity);
             }
 
-            double[] stickCommand = JoystickToCommandedRates(activeX, activeY, gain, 0, 0.0);
+            double[] stickCommand = JoystickToCommandedRates(activeX, activeY, 0, 0.0);
             double[] output = new double[] { stickCommand[0], stickCommand[1], stickCommand[2] };
 
             if (UseMsfsPhysics() && msfsMotion.IsFresh)
             {
-                AddCommandedRates(output, PhysicsMotionToCommandedRates(msfsMotion, gain));
+                AddCommandedRates(output, PhysicsMotionToCommandedRates(msfsMotion));
             }
 
             if (UseForzaPhysics() && forzaMotion.IsFresh)
             {
-                AddCommandedRates(output, PhysicsMotionToCommandedRates(forzaMotion, gain));
+                AddCommandedRates(output, PhysicsMotionToCommandedRates(forzaMotion));
             }
 
             return output;
@@ -741,8 +746,13 @@ namespace VestibularJoystickSim
 
         private void GainSliderScroll(object sender, EventArgs e)
         {
-            gain = gainSlider.Value / 100.0;
-            gainValueLabel.Text = gain.ToString("0.00");
+            currentPeakMilliamp = Clamp(gainSlider.Value / (double)CurrentPeakSliderScale, 0.0, MaxCurrentPeakMilliamp);
+            gainValueLabel.Text = FormatCurrentPeakLabel(currentPeakMilliamp);
+        }
+
+        private static string FormatCurrentPeakLabel(double currentPeakMilliamp)
+        {
+            return currentPeakMilliamp.ToString("0.00") + " mA";
         }
 
         private void StartCalibration(int direction)
@@ -862,10 +872,10 @@ namespace VestibularJoystickSim
             qRateLabel.Text = "q pitch rate: " + qRate.ToString("0.000") + " rad/s";
             rRateLabel.Text = "r yaw rate: " + rRate.ToString("0.000") + " rad/s";
             commandLabel.Text = "Command: P " + commandedP.ToString("0.000") + " Q " + commandedQ.ToString("0.000") + " R " + commandedR.ToString("0.000");
-            dac1Label.Text = "Ch 1: byte " + currentBytes[0].ToString() + " (" + packetValues[0].ToString("0") + ")";
-            dac2Label.Text = "Ch 2: byte " + currentBytes[1].ToString() + " (" + packetValues[1].ToString("0") + ")";
-            dac3Label.Text = "Ch 3: byte " + currentBytes[2].ToString() + " (" + packetValues[2].ToString("0") + ")";
-            dac4Label.Text = "Ch 4: byte " + currentBytes[3].ToString() + " (" + packetValues[3].ToString("0") + ")";
+            dac1Label.Text = "Ch 1: " + currentMilliampValues[0].ToString("0.00") + " mA  byte " + currentBytes[0].ToString() + " (" + packetValues[0].ToString("0") + ")";
+            dac2Label.Text = "Ch 2: " + currentMilliampValues[1].ToString("0.00") + " mA  byte " + currentBytes[1].ToString() + " (" + packetValues[1].ToString("0") + ")";
+            dac3Label.Text = "Ch 3: " + currentMilliampValues[2].ToString("0.00") + " mA  byte " + currentBytes[2].ToString() + " (" + packetValues[2].ToString("0") + ")";
+            dac4Label.Text = "Ch 4: " + currentMilliampValues[3].ToString("0.00") + " mA  byte " + currentBytes[3].ToString() + " (" + packetValues[3].ToString("0") + ")";
             packetLabel.Text = "Packets: " + packetCount.ToString();
             lastPacketLabel.Text = "Last TX: " + lastPacketText;
             armButton.Text = armed ? "Disarm" : "Arm";
@@ -1144,7 +1154,7 @@ namespace VestibularJoystickSim
             return int.TryParse(port.Substring(3), out number);
         }
 
-        private static double[] JoystickToCommandedRates(double activeX, double activeY, double outputGain, int calibratingDirection, double calibrationIntensity)
+        private static double[] JoystickToCommandedRates(double activeX, double activeY, int calibratingDirection, double calibrationIntensity)
         {
             if (calibratingDirection != 0)
             {
@@ -1156,29 +1166,29 @@ namespace VestibularJoystickSim
                 };
             }
 
-            double yaw = Clamp(activeX * GvsMaxRate * outputGain, -GvsMaxRate, GvsMaxRate);
-            double pitch = Clamp(activeY * GvsMaxRate * outputGain, -GvsMaxRate, GvsMaxRate);
+            double yaw = Clamp(activeX * GvsMaxRate, -GvsMaxRate, GvsMaxRate);
+            double pitch = Clamp(activeY * GvsMaxRate, -GvsMaxRate, GvsMaxRate);
             return new double[] { 0.0, pitch, yaw };
         }
 
-        private static double[] PhysicsMotionToCommandedRates(MotionSnapshot motion, double outputGain)
+        private static double[] PhysicsMotionToCommandedRates(MotionSnapshot motion)
         {
             if (!motion.IsFresh)
             {
                 return new double[] { 0.0, 0.0, 0.0 };
             }
 
-            double safeGain = Clamp(outputGain, 0.0, MaxGain);
             return new double[]
             {
-                Clamp(motion.P * safeGain, -GvsMaxRate, GvsMaxRate),
-                Clamp(motion.Q * safeGain, -GvsMaxRate, GvsMaxRate),
-                Clamp(motion.R * safeGain, -GvsMaxRate, GvsMaxRate)
+                Clamp(motion.P, -GvsMaxRate, GvsMaxRate),
+                Clamp(motion.Q, -GvsMaxRate, GvsMaxRate),
+                Clamp(motion.R, -GvsMaxRate, GvsMaxRate)
             };
         }
 
-        private static double[] PqrToCodeMatrixCurrents(double p, double q, double r)
+        private static double[] PqrToCodeMatrixCurrents(double p, double q, double r, double currentPeakMilliamp)
         {
+            double safeCurrentPeakMilliamp = Clamp(currentPeakMilliamp, 0.0, MaxCurrentPeakMilliamp);
             double weightedPitch = 1.5 * q;
             double[] raw = new double[]
             {
@@ -1191,7 +1201,7 @@ namespace VestibularJoystickSim
             double[] currents = new double[4];
             for (int i = 0; i < 4; i++)
             {
-                currents[i] = Clamp(raw[i] * GvsMaxCurrentMilliamp / GvsMaxRate, -GvsMaxCurrentMilliamp, GvsMaxCurrentMilliamp);
+                currents[i] = Clamp(raw[i] * safeCurrentPeakMilliamp / GvsMaxRate, -safeCurrentPeakMilliamp, safeCurrentPeakMilliamp);
             }
             return currents;
         }

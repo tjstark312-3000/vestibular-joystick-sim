@@ -1,5 +1,8 @@
 *
 !.gitignore
+!.github/
+!.github/workflows/
+!.github/workflows/windows-release.yml
 !README.md
 !build.ps1
 !deps/
