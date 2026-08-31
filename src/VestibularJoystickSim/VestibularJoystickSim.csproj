@@ -6,6 +6,8 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>VestibularJoystickSim</RootNamespace>
     <AssemblyName>VestibularJoystickSim</AssemblyName>
+    <ApplicationIcon>VMocion.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <LangVersion>7.3</LangVersion>
   </PropertyGroup>
@@ -22,6 +24,22 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App.cs" />
+    <None Include="app.manifest" />
+    <None Include="VMocion.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\vforce-logo.png">
+      <Link>VForceLogo.png</Link>
+      <LogicalName>VestibularJoystickSim.VForceLogo.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\assets\msfs-game-icon.png">
+      <Link>MsfsGameIcon.png</Link>
+      <LogicalName>VestibularJoystickSim.MsfsGameIcon.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\assets\forza-game-icon.png">
+      <Link>ForzaGameIcon.png</Link>
+      <LogicalName>VestibularJoystickSim.ForzaGameIcon.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\deps\SimConnect.dll">

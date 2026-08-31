@@ -5,12 +5,20 @@
 !.github/workflows/windows-release.yml
 !README.md
 !build.ps1
+!assets/
+!assets/forza-game-icon.png
+!assets/msfs-game-icon.png
+!assets/vforce-logo.png
+!assets/vforce-logo-vm.png
+!assets/VMocion-icon-preview.png
 !deps/
 !deps/SimConnect.dll
 !src/
 !src/VestibularJoystickSim/
 !src/VestibularJoystickSim/App.cs
 !src/VestibularJoystickSim/VestibularJoystickSim.csproj
+!src/VestibularJoystickSim/app.manifest
+!src/VestibularJoystickSim/VMocion.ico
 !outputs/
 !outputs/vestibular-joystick-sim/
 !outputs/vestibular-joystick-sim/VestibularJoystickSim.exe
@@ -23,3 +31,5 @@
 !work/vestibular-exe-builder/
 !work/vestibular-exe-builder/App.cs
 !work/vestibular-exe-builder/VestibularJoystickSim.test.exe
+!tools/
+!tools/make_icon.py
