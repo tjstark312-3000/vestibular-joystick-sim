@@ -35,6 +35,16 @@ internal static class UsbProtocolTests
                 first = false; previous = bench.Uptime;
             }
             Require(!first, "live V4 fixture present");
+            previous = 0; first = true;
+            foreach (object raw in (System.Collections.IEnumerable)fixture["bench_v5_status_samples"])
+            {
+                VmocionUsbStatus bench = VmocionUsbProtocol.BenchStatus((string)raw);
+                Require(bench.Firmware == "VMOCION_BENCH_100K_PAIR_V5" && bench.OutputOff && bench.FaultHealthy &&
+                    !bench.FaultLatched && bench.Blue && !bench.Green, "decode physical V5 idle status after verified application flash");
+                if (!first) Require(VmocionUsbProtocol.Advances(previous, bench.Uptime), "physical V5 uptime advances");
+                first = false; previous = bench.Uptime;
+            }
+            Require(!first, "live V5 fixture present");
             Console.WriteLine("USB codec verification passed; no output commands or analog measurements.");
             return 0;
         }
