@@ -33,3 +33,9 @@
 !work/vestibular-exe-builder/VestibularJoystickSim.test.exe
 !tools/
 !tools/make_icon.py
+
+!src/VestibularJoystickSim/VmocionUsb.cs
+!tests/
+!tests/*.cs
+!tests/*.json
+!.github/workflows/windows-check.yml

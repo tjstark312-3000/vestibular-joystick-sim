@@ -1,57 +1,77 @@
-# VFORCE Vestibular Simulation Console
+# VFORCE — ROG Ally / XIAO USB engineering build
 
-Native Windows VMocion/GVS controller prototype with a physical ROG Ally left-stick input path, game telemetry, and legacy `gvs.py` serial output.
+This branch updates the ROG Ally Windows application for the fabricated
+VMocion-Minimal XIAO PCB. **It is a software preview and firmware-status monitor.
+Physical output control is unavailable in this engineering build.**
 
-## Download
+The older published `v2026.08.30` executable sends legacy 9600-baud `AA ... 55`
+packets and is incompatible with the new guarded firmware and V4 resistor
+firmware. Use the ZIP artifact from this branch's **Windows USB compatibility
+check**, rather than the old release, to test the new USB connection.
 
-[Download the recommended Windows ZIP](https://github.com/tjstark312-3000/vestibular-joystick-sim/releases/latest/download/VestibularJoystickSim-windows.zip) — includes the app and `SimConnect.dll`.
+## What works in this build
 
-[Download the EXE directly](https://github.com/tjstark312-3000/vestibular-joystick-sim/releases/latest/download/VestibularJoystickSim.exe)
+- Physical ROG Ally/XInput left-stick preview, MSFS SimConnect and Forza UDP
+  telemetry retain their existing input and transform code.
+- Selects a unique XIAO application USB device (`VID 2886`, PID `8045` or
+  `0145`). Multiple matching devices require manual COM selection. Legacy
+  FTDI adapters and bootloader ports are not automatically selected.
+- Opens USB CDC at 115200 with DTR asserted, then verifies actual firmware
+  responses. Opening a COM port alone never marks the board verified.
+- Supports `VMOCION_BENCH_100K_PAIR_V3/V4` ASCII status and Minimal guarded-v1
+  binary status, including unprovisioned receivers.
+- Validates guarded CRC/nonce/header/flags and bench fixture/state fields.
+  Two advancing-uptime samples are required; stale status, a reset, unexpected
+  active output or disconnect invalidates the link.
+- Polls USB on a background thread, independently of 60 Hz visualization and
+  joystick/game input. Advanced shows firmware, faults, provisioning and raw
+  reported state. Commanded/modelled preview values are not measured output.
+- Sends only status requests. No legacy ARM/current packets, output vectors,
+  fault clears, baseline confirmations or calibration writes are transmitted.
+  The preview runs without a physical enable requirement.
 
-Extract the ZIP on the Windows device, keep `VestibularJoystickSim.exe` and `SimConnect.dll` together, then open `VestibularJoystickSim.exe`. Windows may show a SmartScreen prompt because the executable is not code-signed.
+The board currently runs V4 with its cutoff and fault protections intact.
+This application does not upgrade, downgrade or provision the firmware.
+Its reported fault signal and GPIO state do not measure delivered current or
+qualify the unspecified custom head phantom. A passive electrical head phantom
+cannot establish human vestibular perception.
 
-## Included
+## Install on the ROG Ally
 
-- `outputs/vestibular-joystick-sim/VestibularJoystickSim.exe` - current Windows executable.
-- `outputs/vestibular-joystick-sim/SimConnect.dll` - Microsoft Flight Simulator connection library.
-- `src/VestibularJoystickSim/App.cs` - source code for the main executable.
-- `src/VestibularJoystickSim/VestibularJoystickSim.csproj` - project metadata for the WinForms app.
-- `src/VestibularJoystickSim/app.manifest` - Per-Monitor V2 DPI and Windows compatibility metadata.
-- `assets/vforce-logo.png` - embedded VFORCE wordmark used by the self-contained executable.
-- `work/vestibular-exe-builder/App.cs` - mirrored WinForms source used by the legacy build layout.
+Download the `VFORCE-XIAO-engineering` ZIP artifact from a successful Windows
+check for this branch. Extract it, keeping `VestibularJoystickSim.exe` and
+`SimConnect.dll` together. Close the older app and other serial programs,
+connect the PCB through a USB data cable, and open the new EXE. Advanced lets
+you select a COM port when multiple boards are connected.
 
-## Current Behavior
+Expect `USB VERIFIED` and `REPORTED OFF` after valid responses. `UNVERIFIED`
+means the current output state has not been confirmed. This build leaves the
+output button disabled. No Windows-on-ROG-Ally hardware run has been recorded;
+CI compilation and codec tests are separate evidence.
 
-- Automatically detects VMocion/DIGITUS/FTDI hardware and selects its COM port, with manual COM selection still available.
-- Shows customer-facing status badges for the controller, VMocion link, and armed output state.
-- Includes one-tap installed-game launch tiles for Microsoft Flight Simulator and Forza Horizon 5.
-- Keeps protocol, COM, packet, and channel diagnostics in the Advanced support dialog instead of the main screen.
-- Uses COM serial output at `9600` baud and never arms motion automatically.
-- Sends legacy VMocion `gvs.py` UART packets: `AA len signal checksum 55`.
-- Uses the `gvs.py` P/Q/R matrix for vestibular output.
-- The `Peak mA` slider limits channel current from `0.00` to `2.50 mA`; the default startup value is `0.50 mA` for gentler first-time testing.
-- Prioritizes the ROG Ally/XInput left stick, with the Windows joystick API as a hardware fallback. Keyboard and pointer movement cannot drive output.
-- Selecting the Flight Simulator tile launches the installed game and enables SimConnect physics; it reconnects after the simulator restarts.
-- Selecting the Forza tile launches Forza Horizon 5 and enables valid local race telemetry on UDP `5300` or `5607`; configure the game's Data Out IP as `127.0.0.1`.
-- Only the selected game feed runs, avoiding duplicate polling; its motion can still be combined with the physical stick.
-- Pause sends and holds neutral output. Disconnects, serial errors, and application close disarm output.
-- Joystick visuals update at 60 Hz while the safety-critical output cadence remains at 25 ms. USB/WMI discovery runs off the UI hot path.
-- Keeps the on-screen joystick out of the control path.
+Optional read-only connection report, replacing COM5 with the detected port:
 
-## Build
+```powershell
+Start-Process -FilePath .\VestibularJoystickSim.exe -ArgumentList '--usb-status','COM5','usb-status.txt' -Wait
+Get-Content .\usb-status.txt
+```
 
-Run from the repository root:
+The report does not measure the analog waveform. Firmware remains output off
+unless a separate qualified test session commands it.
+
+## Build and verify
 
 ```powershell
 .\build.ps1
 ```
 
-The build runs the executable's packet, transforms, MSFS mapping, Forza validation, and source-selection self-tests and fails if any test fails.
+Build uses the Windows .NET Framework compiler. It runs the existing packet,
+transform, input-source and telemetry self-tests plus USB codec self-tests.
+The Windows check additionally decodes status generated by the actual portable
+firmware core under synthetic provisioning and three read-only status captures
+from the physical V4 board. The fixture identifies those scopes explicitly.
+The engineering ZIP includes SHA-256 sums for the EXE and SimConnect DLL.
 
-The build uses the .NET Framework C# compiler included with Windows:
-
-`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`
-
-## Safety
-
-This is an educational/prototype hardware controller, not a medical, diagnostic, therapeutic, or clinical tool. Verify neutral output while disarmed before every session. Stop immediately if discomfort, dizziness, nausea, or unexpected output occurs.
+Clinical stimulus limits, physical calibration, the phantom's measured electrical
+load and hardware fault/cutoff validation remain separate requirements. No
+human-use qualification or removal of electrical safeguards is provided.

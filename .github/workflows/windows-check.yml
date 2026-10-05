@@ -1,0 +1,36 @@
+name: Windows USB compatibility check
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build application and existing motion self-tests
+        shell: pwsh
+        run: .\build.ps1
+      - name: Verify firmware codec and recorded V4 USB status
+        shell: pwsh
+        run: |
+          $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:exe /out:outputs\UsbProtocolTests.exe /reference:System.dll /reference:System.Management.dll /reference:System.Web.Extensions.dll src\VestibularJoystickSim\VmocionUsb.cs tests\UsbProtocolTests.cs
+          if ($LASTEXITCODE -ne 0) { throw 'USB test compilation failed' }
+          & .\outputs\UsbProtocolTests.exe tests\usb-status-fixtures.json
+          if ($LASTEXITCODE -ne 0) { throw 'USB codec tests failed' }
+      - name: Package engineering application
+        shell: pwsh
+        run: |
+          $files = @('outputs\vestibular-joystick-sim\VestibularJoystickSim.exe', 'outputs\vestibular-joystick-sim\SimConnect.dll')
+          $files | ForEach-Object { $hash = Get-FileHash $_ -Algorithm SHA256; "$($hash.Hash.ToLower())  $(Split-Path $_ -Leaf)" } | Set-Content outputs\vestibular-joystick-sim\SHA256SUMS.txt
+          Copy-Item README.md outputs\vestibular-joystick-sim\README.md
+          Compress-Archive -Path outputs\vestibular-joystick-sim\* -DestinationPath outputs\VFORCE-XIAO-engineering.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VFORCE-XIAO-engineering
+          path: outputs/VFORCE-XIAO-engineering.zip
+          if-no-files-found: error

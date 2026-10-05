@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $source = Join-Path $root 'src\VestibularJoystickSim\App.cs'
+$usbSource = Join-Path $root 'src\VestibularJoystickSim\VmocionUsb.cs'
 $icon = Join-Path $root 'src\VestibularJoystickSim\VMocion.ico'
 $manifest = Join-Path $root 'src\VestibularJoystickSim\app.manifest'
 $vforceLogo = Join-Path $root 'assets\vforce-logo.png'
@@ -44,7 +45,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
     /reference:System.Management.dll `
-    $source
+    $source $usbSource
 
 if ($LASTEXITCODE -ne 0) {
     throw "C# compilation failed with exit code $LASTEXITCODE."

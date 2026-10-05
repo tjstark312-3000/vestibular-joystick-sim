@@ -24,6 +24,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App.cs" />
+    <Compile Include="VmocionUsb.cs" />
     <None Include="app.manifest" />
     <None Include="VMocion.ico" />
   </ItemGroup>
