@@ -79,7 +79,8 @@ namespace VestibularJoystickSim
         public static VmocionUsbStatus BenchStatus(string line)
         {
             string[] parts = line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2 || (parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4" && parts[0] != "VMOCION_BENCH_100K_PAIR_V5"))
+            bool nominal2k = parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_AB_V1";
+            if (parts.Length < 2 || (!nominal2k && parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4" && parts[0] != "VMOCION_BENCH_100K_PAIR_V5"))
                 throw new FormatException("Unsupported bench firmware");
             Dictionary<string, string> fields = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int i = 1; i < parts.Length; ++i)
@@ -93,7 +94,9 @@ namespace VestibularJoystickSim
             uint uptime;
             if (!fields.ContainsKey("uptime_ms") || !uint.TryParse(fields["uptime_ms"], NumberStyles.None, CultureInfo.InvariantCulture, out uptime) ||
                 !fields.ContainsKey("pair") || fields["pair"] != "J2_1_2" ||
-                !fields.ContainsKey("assumed_load_ohms") || fields["assumed_load_ohms"] != "100000")
+                !fields.ContainsKey("assumed_load_ohms") || fields["assumed_load_ohms"] != (nominal2k ? "2000" : "100000") ||
+                (nominal2k && (!fields.ContainsKey("nominal_only") || fields["nominal_only"] != "1" ||
+                    !fields.ContainsKey("calibration_present") || fields["calibration_present"] != "0")))
                 throw new FormatException("Unexpected bench fixture/status");
             return new VmocionUsbStatus { Firmware = parts[0], Uptime = uptime,
                 Armed = fields["arm_pin"] == "1" || fields["active"] == "1", Carrier = fields["carrier_pin"] == "1",
@@ -143,6 +146,10 @@ namespace VestibularJoystickSim
                 try { GuardedStatus(response, 0x12345678); return false; } catch (FormatException) { }
                 string bench = "VMOCION_BENCH_100K_PAIR_V4 active=0 arm_pin=0 carrier_pin=0 fault_n=1 fault_latched=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 uptime_ms=5000";
                 if (!BenchStatus(bench).OutputOff || !BenchStatus(bench).Blue || !BenchStatus(bench.Replace("V4", "V5")).OutputOff) return false;
+                string nominal = bench.Replace("VMOCION_BENCH_100K_PAIR_V4", "VMOCION_NOMINAL_2K_AB_V1").Replace("100000", "2000") + " nominal_only=1 calibration_present=0";
+                if (!BenchStatus(nominal).OutputOff || BenchStatus(nominal).Calibration) return false;
+                foreach (string bad in new string[] { nominal.Replace("2000", "100000"), nominal.Replace("nominal_only=1", "nominal_only=0"), nominal.Replace("calibration_present=0", "calibration_present=1"), nominal.Replace(" calibration_present=0", "") })
+                    try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { bench + " active=0", bench.Replace("fault_n=1", "fault_n=2"), bench.Replace("100000", "5000"), bench.Replace("V4", "V99"), bench.Replace(" uptime_ms=5000", "") })
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
                 return Advances(0xfffffffe, 2) && !Advances(5000, 5000) && !Advances(5000, 4) &&
@@ -217,7 +224,7 @@ namespace VestibularJoystickSim
                 if (c == '\n')
                 {
                     string text = line.ToString().Trim(); line.Length = 0;
-                    if (text.StartsWith("VMOCION_BENCH_", StringComparison.Ordinal)) return VmocionUsbProtocol.BenchStatus(text);
+                    if (text.StartsWith("VMOCION_BENCH_", StringComparison.Ordinal) || text.StartsWith("VMOCION_NOMINAL_", StringComparison.Ordinal)) return VmocionUsbProtocol.BenchStatus(text);
                 }
                 else if (c >= 32 && c <= 126) { if (line.Length >= 1024) throw new FormatException("Oversize bench status"); line.Append((char)c); }
                 else if (c != '\r') line.Length = 0;
