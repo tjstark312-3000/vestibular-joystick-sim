@@ -79,7 +79,7 @@ namespace VestibularJoystickSim
         public static VmocionUsbStatus BenchStatus(string line)
         {
             string[] parts = line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2 || (parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4"))
+            if (parts.Length < 2 || (parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4" && parts[0] != "VMOCION_BENCH_100K_PAIR_V5"))
                 throw new FormatException("Unsupported bench firmware");
             Dictionary<string, string> fields = new Dictionary<string, string>(StringComparer.Ordinal);
             for (int i = 1; i < parts.Length; ++i)
@@ -142,7 +142,7 @@ namespace VestibularJoystickSim
                 response[15] = 0; response[16] = 1; Write32(response, 28, Crc32(response, 28));
                 try { GuardedStatus(response, 0x12345678); return false; } catch (FormatException) { }
                 string bench = "VMOCION_BENCH_100K_PAIR_V4 active=0 arm_pin=0 carrier_pin=0 fault_n=1 fault_latched=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 uptime_ms=5000";
-                if (!BenchStatus(bench).OutputOff || !BenchStatus(bench).Blue) return false;
+                if (!BenchStatus(bench).OutputOff || !BenchStatus(bench).Blue || !BenchStatus(bench.Replace("V4", "V5")).OutputOff) return false;
                 foreach (string bad in new string[] { bench + " active=0", bench.Replace("fault_n=1", "fault_n=2"), bench.Replace("100000", "5000"), bench.Replace("V4", "V99"), bench.Replace(" uptime_ms=5000", "") })
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
                 return Advances(0xfffffffe, 2) && !Advances(5000, 5000) && !Advances(5000, 4) &&
