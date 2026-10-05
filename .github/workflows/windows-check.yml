@@ -34,8 +34,20 @@ jobs:
         run: |
           $files = @('outputs\vestibular-joystick-sim\VestibularJoystickSim.exe', 'outputs\vestibular-joystick-sim\SimConnect.dll')
           $files | ForEach-Object { $hash = Get-FileHash $_ -Algorithm SHA256; "$($hash.Hash.ToLower())  $(Split-Path $_ -Leaf)" } | Set-Content outputs\vestibular-joystick-sim\SHA256SUMS.txt
-          Copy-Item README.md outputs\vestibular-joystick-sim\README.md
-          Compress-Archive -Path outputs\vestibular-joystick-sim\* -DestinationPath outputs\VFORCE-XIAO-engineering.zip
+          $stage = 'outputs\xiao-engineering-package'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $files | ForEach-Object { Copy-Item $_ $stage }
+          Copy-Item outputs\vestibular-joystick-sim\SHA256SUMS.txt $stage
+          Copy-Item outputs\vestibular-joystick-sim\windows-preview.png $stage
+          Copy-Item README.md $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath outputs\VFORCE-XIAO-engineering.zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path outputs\VFORCE-XIAO-engineering.zip))
+          try {
+            $names = @($zip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+            $expected = @('README.md','SHA256SUMS.txt','SimConnect.dll','VestibularJoystickSim.exe','windows-preview.png') | Sort-Object
+            if (Compare-Object $names $expected) { throw 'Unexpected package members' }
+          } finally { $zip.Dispose() }
       - uses: actions/upload-artifact@v4
         with:
           name: VFORCE-XIAO-engineering
