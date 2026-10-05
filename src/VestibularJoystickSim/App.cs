@@ -32,6 +32,23 @@ namespace VestibularJoystickSim
                 return PacketBuilder.SelfTest() && MainForm.SelfTest() && VmocionUsbProtocol.SelfTest() ? 0 : 2;
             }
 
+            if (args.Length == 2 && args[0] == "--render-preview")
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                using (MainForm form = new MainForm())
+                {
+                    form.Show(); Application.DoEvents();
+                    using (Bitmap bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+                    {
+                        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                        bitmap.Save(args[1], System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    form.Close();
+                }
+                return 0;
+            }
+
             if (args.Length == 3 && args[0] == "--usb-status")
             {
                 try

@@ -22,6 +22,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'USB test compilation failed' }
           & .\outputs\UsbProtocolTests.exe tests\usb-status-fixtures.json
           if ($LASTEXITCODE -ne 0) { throw 'USB codec tests failed' }
+      - name: Render Windows preview for visual inspection
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe').Path
+          $image = Join-Path (Get-Location) 'outputs\vestibular-joystick-sim\windows-preview.png'
+          $process = Start-Process -FilePath $exe -ArgumentList '--render-preview',$image -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or !(Test-Path $image)) { throw 'Preview rendering failed' }
       - name: Package engineering application
         shell: pwsh
         run: |
