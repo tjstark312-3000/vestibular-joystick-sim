@@ -16,7 +16,7 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace VestibularJoystickSim
 {
@@ -29,7 +29,46 @@ namespace VestibularJoystickSim
         {
             if (args.Length > 0 && string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
-                return PacketBuilder.SelfTest() && MainForm.SelfTest() ? 0 : 2;
+                return PacketBuilder.SelfTest() && MainForm.SelfTest() && VmocionUsbProtocol.SelfTest() ? 0 : 2;
+            }
+
+            if (args.Length == 2 && args[0] == "--render-preview")
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                using (MainForm form = new MainForm())
+                {
+                    form.Show(); Application.DoEvents();
+                    using (Bitmap bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height))
+                    {
+                        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                        bitmap.Save(args[1], System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    form.Close();
+                }
+                return 0;
+            }
+
+            if (args.Length == 3 && args[0] == "--usb-status")
+            {
+                try
+                {
+                    using (VmocionUsbMonitor monitor = new VmocionUsbMonitor(args[1]))
+                    {
+                        Stopwatch timeout = Stopwatch.StartNew();
+                        while (!monitor.Verified && monitor.Error == null && timeout.ElapsedMilliseconds < 8000) Thread.Sleep(50);
+                        VmocionUsbStatus status = monitor.Latest;
+                        bool verified = monitor.Verified;
+                        string report = "scope=FIRMWARE_STATUS_ONLY_NO_ANALOG_MEASUREMENT\r\n" +
+                            "output_control_available=false\r\nactive_commands_sent=0\r\n" +
+                            "usb_verified=" + verified + "\r\n" +
+                            (status == null ? "firmware=unverified" : status.Summary + "\r\n" + status.Raw) +
+                            "\r\nerror=" + (monitor.Error ?? "") + "\r\n";
+                        System.IO.File.WriteAllText(args[2], report);
+                        return verified ? 0 : 3;
+                    }
+                }
+                catch (Exception ex) { System.IO.File.WriteAllText(args[2], "usb_verified=false\r\nerror=" + ex.Message); return 3; }
             }
 
             bool createdNew;
@@ -58,7 +97,7 @@ namespace VestibularJoystickSim
             Forza
         }
 
-        private const int SerialBaud = 9600;
+        // USB firmware status uses 115200; transport runs outside the UI timers.
         private const double Deadzone = 0.01;
         // These constants mirror VMocion-main\legacy_demo-main\gvs.py.
         private const double GvsMaxRate = 3.14 / 4.0;
@@ -67,7 +106,7 @@ namespace VestibularJoystickSim
         private const double MaxCurrentPeakMilliamp = 2.5;
         private const double DefaultCurrentPeakMilliamp = 0.5;
         private const int CurrentPeakSliderScale = 100;
-        private const double SerialSendIntervalSeconds = 0.025;
+
         private const int MsfsSimConnectMessage = 0x0402;
 
         private readonly PhysicalStickView stickView;
@@ -96,9 +135,9 @@ namespace VestibularJoystickSim
         private readonly Image forzaGameImage;
         private readonly Label inputLabel;
 
-        private SerialPort serialPort;
+        private VmocionUsbMonitor serialPort;
         private DateTime lastTick;
-        private DateTime lastSerialSend = DateTime.MinValue;
+
         private DateTime lastSerialScan = DateTime.MinValue;
         private DateTime lastAutoConnectAttempt = DateTime.MinValue;
         private DateTime lastUiTextUpdate = DateTime.MinValue;
@@ -261,7 +300,7 @@ namespace VestibularJoystickSim
             gainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
             gainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             gainCard.Controls.Add(gainLayout);
-            Label gainTitle = MakeSectionTitle("INTENSITY LIMIT   /   PEAK CURRENT");
+            Label gainTitle = MakeSectionTitle("SOFTWARE PREVIEW   /   SCALE");
             gainTitle.Dock = DockStyle.Fill;
             gainLayout.Controls.Add(gainTitle, 0, 0);
 
@@ -283,8 +322,8 @@ namespace VestibularJoystickSim
             gainSlider.LargeChange = 25;
             gainSlider.Dock = DockStyle.Fill;
             gainSlider.Margin = new Padding(14, 2, 26, 0);
-            gainSlider.AccessibleName = "Peak stimulation current";
-            gainSlider.AccessibleDescription = "Sets the peak output current from zero to 2.50 milliamps.";
+            gainSlider.AccessibleName = "Software preview current scale";
+            gainSlider.AccessibleDescription = "Scales the software preview only; it does not set PCB output current.";
             gainSlider.Scroll += GainSliderScroll;
             gainControl.Controls.Add(gainSlider, 0, 0);
 
@@ -448,7 +487,7 @@ namespace VestibularJoystickSim
             footerLayout.Controls.Add(statusLabel, 0, 0);
 
             Label safetyFooter = new Label();
-            safetyFooter.Text = "OUTPUT STARTS SAFE   |   STOP IF UNCOMFORTABLE";
+            safetyFooter.Text = "ENGINEERING PREVIEW   |   PHYSICAL OUTPUT CONTROL UNAVAILABLE";
             safetyFooter.Dock = DockStyle.Fill;
             safetyFooter.ForeColor = Theme.Warning;
             safetyFooter.Font = new Font("Segoe UI", 8.0f, FontStyle.Bold);
@@ -456,11 +495,11 @@ namespace VestibularJoystickSim
             safetyFooter.AutoEllipsis = true;
             footerLayout.Controls.Add(safetyFooter, 1, 0);
 
-            toolTip.SetToolTip(gainSlider, "Peak current safety limit. Starts at 0.50 mA and is not persisted between sessions.");
-            toolTip.SetToolTip(portCombo, "Automatically selects a detected VMocion/FTDI serial device. You can also choose a COM port manually.");
+            toolTip.SetToolTip(gainSlider, "Software preview scale only; not a physical current setting or biological safety limit.");
+            toolTip.SetToolTip(portCombo, "Detects a XIAO application USB port, then verifies firmware status. Legacy FTDI devices are unsupported in this build.");
             toolTip.SetToolTip(refreshButton, "Rescan Windows serial devices.");
-            toolTip.SetToolTip(connectButton, "Connect or disconnect the selected VMocion serial device.");
-            toolTip.SetToolTip(armButton, "Explicitly enable live output. Output always starts disarmed.");
+            toolTip.SetToolTip(connectButton, "Connect or disconnect the XIAO USB status monitor. This does not authorize electrical output.");
+            toolTip.SetToolTip(armButton, "Physical output control is unavailable in this engineering USB compatibility build.");
             toolTip.SetToolTip(msfsLaunchButton, "Open Microsoft Flight Simulator and select its motion feed.");
             toolTip.SetToolTip(forzaLaunchButton, "Open Forza Horizon 5 and select its motion feed.");
             toolTip.SetToolTip(safetyFooter, safetyFooter.Text);
@@ -586,8 +625,8 @@ namespace VestibularJoystickSim
                 {
                     // The output path may itself be the source of the failure.
                 }
-                SetStatus("Fault - output disarmed");
-                MessageBox.Show("VFORCE stopped the simulation and disarmed output after an unexpected error.\r\n\r\n" + ex.Message,
+                SetStatus("Preview stopped; USB closed");
+                MessageBox.Show("VFORCE stopped the preview and closed USB after an unexpected error.\r\n\r\n" + ex.Message,
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -686,35 +725,15 @@ namespace VestibularJoystickSim
 
         private void SendVestibularOutput()
         {
-            if (!armed || serialPort == null || !serialPort.IsOpen)
+            // This engineering build never sends an output or activation packet.
+            // Joystick/game telemetry remains a software preview.
+            armed = false;
+            if (serialPort != null && serialPort.Error != null)
             {
-                return;
+                string reason = serialPort.Error;
+                SafeDisarmAndClose();
+                SetStatus("USB check failed: " + reason);
             }
-
-            try
-            {
-                DateTime now = DateTime.UtcNow;
-                if ((now - lastSerialSend).TotalSeconds < SerialSendIntervalSeconds)
-                {
-                    return;
-                }
-
-                WritePacket(PacketBuilder.UartSignal(new int[] { 10, currentBytes[0], currentBytes[1], currentBytes[2], currentBytes[3] }));
-                lastSerialSend = now;
-            }
-            catch (Exception ex)
-            {
-                armed = false;
-                SetStatus("Serial error - disarmed");
-                MessageBox.Show("Serial write failed: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        private void WritePacket(byte[] packet)
-        {
-            serialPort.Write(packet, 0, packet.Length);
-            packetCount++;
-            lastPacketText = PacketToPreview(packet);
         }
 
         private void SendNeutralOutput()
@@ -724,65 +743,13 @@ namespace VestibularJoystickSim
 
         private void SendNeutralOutput(bool ignoreWriteErrors)
         {
-            pRate = 0.0;
-            qRate = 0.0;
-            rRate = 0.0;
-            for (int i = 0; i < 4; i++)
+            pRate = qRate = rRate = commandedP = commandedQ = commandedR = 0.0;
+            for (int i = 0; i < 4; ++i)
             {
-                packetValues[i] = 0.0;
+                packetValues[i] = currentMilliampValues[i] = dacValues[i] = 0.0;
                 currentBytes[i] = 128;
-                currentMilliampValues[i] = 0.0;
-                dacValues[i] = 0.0;
             }
-            commandedP = 0.0;
-            commandedQ = 0.0;
-            commandedR = 0.0;
-
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            try
-            {
-                WritePacket(PacketBuilder.UartSignal(new int[] { 10, 128, 128, 128, 128 }));
-                lastSerialSend = DateTime.UtcNow;
-            }
-            catch (Exception)
-            {
-                if (!ignoreWriteErrors)
-                {
-                    throw;
-                }
-
-                lastPacketText = "Neutral TX failed";
-                SetStatus("Neutral TX failed");
-                // Closing should continue even if the device disappears.
-            }
-        }
-
-        private void SetHardwareMode(bool enabled, bool ignoreWriteErrors)
-        {
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            try
-            {
-                WritePacket(PacketBuilder.UartSignal(new int[] { enabled ? 2 : 1 }));
-                lastSerialSend = DateTime.MinValue;
-            }
-            catch (Exception)
-            {
-                if (!ignoreWriteErrors)
-                {
-                    throw;
-                }
-
-                lastPacketText = "Mode TX failed";
-                SetStatus("Mode TX failed");
-            }
+            armed = false;
         }
 
         private void ConnectButtonClick(object sender, EventArgs e)
@@ -800,55 +767,27 @@ namespace VestibularJoystickSim
         {
             if (portCombo.SelectedItem == null)
             {
-                SetStatus("No VMocion serial device found");
-                if (interactive)
-                {
-                    MessageBox.Show("No COM port is available. Connect the VMocion USB serial device, then choose Refresh.",
-                        Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
+                SetStatus("Connect XIAO USB, then refresh ports");
                 return false;
             }
-
             try
             {
-                serialPort = new SerialPort(portCombo.SelectedItem.ToString(), SerialBaud);
-                serialPort.DataBits = 8;
-                serialPort.Parity = Parity.None;
-                serialPort.StopBits = StopBits.One;
-                serialPort.Handshake = Handshake.None;
-                serialPort.DtrEnable = false;
-                serialPort.RtsEnable = false;
-                serialPort.WriteBufferSize = 4096;
-                serialPort.WriteTimeout = 1000;
-                serialPort.ReadTimeout = 250;
-                serialPort.Open();
+                serialPort = new VmocionUsbMonitor(portCombo.SelectedItem.ToString());
                 packetCount = 0;
-                lastSerialSend = DateTime.MinValue;
+                lastPacketText = "Status requests only; no output packets";
                 connectButton.Text = "Disconnect";
                 portCombo.Enabled = false;
-                armButton.Enabled = true;
-                SetStatus("Connected");
+                armButton.Enabled = false;
+                SetStatus("Checking firmware - output control unavailable");
                 UpdateUi();
                 return true;
             }
             catch (Exception ex)
             {
-                if (serialPort != null)
-                {
-                    try
-                    {
-                        serialPort.Dispose();
-                    }
-                    catch
-                    {
-                    }
-                }
+                if (serialPort != null) serialPort.Dispose();
                 serialPort = null;
-                SetStatus(interactive ? "Connect failed" : "Auto-connect waiting");
-                if (interactive)
-                {
-                    MessageBox.Show("Could not open serial port: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
+                SetStatus("Connect failed: " + ex.Message);
+                if (interactive) MessageBox.Show(ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 UpdateUi();
                 return false;
             }
@@ -959,42 +898,8 @@ namespace VestibularJoystickSim
 
         private void ArmButtonClick(object sender, EventArgs e)
         {
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            if (armed)
-            {
-                try
-                {
-                    armed = false;
-                    SendNeutralOutput(false);
-                    SetHardwareMode(false, false);
-                    SetStatus("Connected");
-                }
-                catch (Exception ex)
-                {
-                    SetStatus("Disarm error");
-                    MessageBox.Show("Could not disarm output: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
-            else
-            {
-                try
-                {
-                    SetHardwareMode(true, false);
-                    SendNeutralOutput(false);
-
-                    armed = true;
-                    SetStatus("Output armed - legacy gvs.py");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Could not arm output: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
-
+            armed = false;
+            SetStatus("Physical output control unavailable in this engineering build");
             UpdateUi();
         }
 
@@ -1005,11 +910,11 @@ namespace VestibularJoystickSim
             {
                 StopCalibration();
                 SendNeutralOutput();
-                SetStatus("Paused - neutral");
+                SetStatus("Preview paused; no output commands sent");
             }
             else if (armed)
             {
-                SetStatus("Output armed - legacy gvs.py");
+                SetStatus("Physical output control unavailable");
             }
             else if (serialPort != null && serialPort.IsOpen)
             {
@@ -1080,7 +985,7 @@ namespace VestibularJoystickSim
             if (elapsed >= 5.0)
             {
                 StopCalibration();
-                SetStatus(armed ? "Output armed - legacy gvs.py" : "Ready");
+                SetStatus("Preview ready");
             }
 
             return 0.0;
@@ -1125,8 +1030,7 @@ namespace VestibularJoystickSim
                     Array.Sort(ports, ComparePortNames);
                     vestibularPort = FindPortByHardwareText(ports, new string[]
                     {
-                        "A403QKIL", "VMOCION", "DIGITUS", "VID_0403&PID_6001",
-                        "FTEMPZK0", "USB SERIAL PORT", "USB SERIAL CONVERTER", "FTDI"
+                        "VID_2886&PID_8045", "VID_2886&PID_0145"
                     });
                 }
                 catch
@@ -1187,10 +1091,6 @@ namespace VestibularJoystickSim
             {
                 preferred = previous;
             }
-            if (preferred == null && PortExists(ports, "COM4"))
-            {
-                preferred = "COM4";
-            }
             if (preferred == null && ports.Length > 0)
             {
                 preferred = ports[0];
@@ -1215,7 +1115,6 @@ namespace VestibularJoystickSim
         {
             armed = false;
             SendNeutralOutput();
-            SetHardwareMode(false, true);
 
             if (serialPort != null)
             {
@@ -1306,7 +1205,7 @@ namespace VestibularJoystickSim
             string inputState = physicalInputConnected ? "LEFT STICK READY" : "CONNECT CONTROLLER";
             if (paused)
             {
-                inputState = "PAUSED  |  OUTPUT NEUTRAL";
+                inputState = "PAUSED  |  SOFTWARE PREVIEW";
             }
             else if (activeGameMotion.IsFresh)
             {
@@ -1322,7 +1221,8 @@ namespace VestibularJoystickSim
             }
             inputLabel.Text = inputState;
 
-            armButton.Text = armed ? "Disarm" : "Arm";
+            armButton.Text = "Preview only";
+            armButton.Enabled = false;
             armButton.BackColor = armed ? Theme.Danger : Theme.Purple;
             armButton.ForeColor = Color.White;
             armButton.FlatAppearance.BorderColor = armed ? Theme.Danger : Theme.PurpleBright;
@@ -1332,10 +1232,12 @@ namespace VestibularJoystickSim
                 physicalInputConnected ? BadgeState.Ready : BadgeState.Neutral);
             bool deviceConnected = serialPort != null && serialPort.IsOpen;
             string selectedPort = portCombo.SelectedItem as string;
-            deviceBadge.SetStatus(deviceConnected ? serialPort.PortName : (string.IsNullOrEmpty(selectedPort) ? "SCANNING" : "AUTO " + selectedPort),
-                deviceConnected ? BadgeState.Ready : BadgeState.Neutral);
-            outputBadge.SetStatus(armed ? "LIVE" : (paused ? "PAUSED" : "SAFE"),
-                armed ? BadgeState.Danger : (paused ? BadgeState.Warning : BadgeState.Neutral));
+            bool verified = deviceConnected && serialPort.Verified;
+            deviceBadge.SetStatus(verified ? "USB VERIFIED" : (deviceConnected ? "CHECKING USB" : "DISCONNECTED"),
+                verified ? BadgeState.Ready : BadgeState.Neutral);
+            outputBadge.SetStatus(verified ? "REPORTED OFF" : "UNVERIFIED", BadgeState.Neutral);
+            if (deviceConnected && serialPort.Latest != null)
+                SetStatus(verified ? ((!serialPort.Latest.FaultHealthy || serialPort.Latest.FaultLatched) ? "Hardware fault reported; preview only" : "USB verified; preview only") : "Checking firmware; preview only");
 
             UpdateGameButton(msfsLaunchButton, "FLIGHT SIM", UseMsfsPhysics(), msfsFresh);
             UpdateGameButton(forzaLaunchButton, "FORZA 5", UseForzaPhysics(), forzaFresh);
@@ -1492,9 +1394,12 @@ namespace VestibularJoystickSim
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "VMocion: " + ((serialPort != null && serialPort.IsOpen) ? serialPort.PortName + " connected" : "not connected") + "\r\n" +
                 "Available ports: " + (ports.Length == 0 ? "none" : string.Join(", ", ports)) + "\r\n" +
-                "Output: " + (armed ? "ARMED / LIVE" : "DISARMED / SAFE") + "\r\n" +
-                "Peak limit: " + FormatCurrentPeakLabel(currentPeakMilliamp) + "\r\n" +
-                "Packets sent: " + packetCount.ToString() + "\r\n" +
+                "Output: " + ((serialPort != null && serialPort.Verified) ? "REPORTED OFF" : "UNVERIFIED") + "\r\n" +
+                "Firmware: " + ((serialPort != null && serialPort.Latest != null) ? serialPort.Latest.Summary : "not verified") + "\r\n" +
+                "Last RX: " + ((serialPort != null && serialPort.Latest != null) ? serialPort.Latest.Raw : "none") + "\r\n" +
+                "Analog current feedback: unavailable on this PCB\r\n" +
+                "Software preview peak: " + FormatCurrentPeakLabel(currentPeakMilliamp) + "\r\n" +
+                "Output packets sent: " + packetCount.ToString() + "\r\n" +
                 "Last TX: " + lastPacketText;
 
             Form dialog = new Form();
@@ -1742,47 +1647,21 @@ namespace VestibularJoystickSim
 
         private static string FindPortByHardwareText(string[] ports, string[] needles)
         {
+            HashSet<string> matches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name, PNPDeviceID FROM Win32_PnPEntity WHERE Name LIKE '%(COM%'"))
                 using (ManagementObjectCollection devices = searcher.Get())
-                {
                     foreach (ManagementObject device in devices)
                     {
-                        string text = ((device["Name"] as string) ?? "") + " " + ((device["PNPDeviceID"] as string) ?? "");
-                        if (!ContainsAny(text, needles))
-                        {
-                            continue;
-                        }
-
-                        string port = ExtractPortName(text, ports);
-                        if (port != null)
-                        {
-                            return port;
-                        }
+                        if (!VmocionUsbProtocol.SupportedHardware(device["PNPDeviceID"] as string)) continue;
+                        string port = VmocionUsbProtocol.PortInName(device["Name"] as string);
+                        if (port != null && PortExists(ports, port)) matches.Add(port);
                     }
-                }
             }
-            catch
-            {
-                return null;
-            }
-
-            return null;
-        }
-
-        private static string ExtractPortName(string text, string[] ports)
-        {
-            for (int i = 0; i < ports.Length; i++)
-            {
-                string port = ports[i];
-                if (text.IndexOf("(" + port + ")", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    text.IndexOf(port, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return port;
-                }
-            }
-
+            catch { return null; }
+            if (matches.Count != 1) return null;
+            foreach (string port in matches) return port;
             return null;
         }
 

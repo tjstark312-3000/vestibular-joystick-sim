@@ -1,0 +1,56 @@
+{
+  "scope": "SOFTWARE_CODEC_INTEROP_AND_READ_ONLY_USB_STATUS_NO_ANALOG_VALIDATION",
+  "firmware_commit": "44d68d9a8b34be856ddef6f988cf5e208272a474",
+  "nonce": 305419896,
+  "request_hex": "564d01017856341200000000000000000000000000000000000000006c266190",
+  "firmware_response_hex": "564d018178563412100000000101000000010107290000008813000034d58750",
+  "bench_status_samples": [
+    "VMOCION_BENCH_100K_PAIR_V4 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=1306870",
+    "VMOCION_BENCH_100K_PAIR_V4 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=1307125",
+    "VMOCION_BENCH_100K_PAIR_V4 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=1307382"
+  ],
+  "bench_v5_status_samples": [
+    "VMOCION_BENCH_100K_PAIR_V5 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=893",
+    "VMOCION_BENCH_100K_PAIR_V5 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=1519",
+    "VMOCION_BENCH_100K_PAIR_V5 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=2145",
+    "VMOCION_BENCH_100K_PAIR_V5 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=3399"
+  ],
+  "bench_v5_firmware_commit": "822ea76d3934676a7ae5b632297ea328ebd06dba",
+  "bench_v5_package_sha256": "a234dcfd2b38813e5c8ee1c4b5090e05e24f32896236f51b12227a5734af4f31",
+  "nominal_2k_mock_status_samples": [
+    "VMOCION_NOMINAL_2K_AB_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=10001"
+  ],
+  "nominal_2k_provenance": {
+    "source": "actual sketch under deterministic host peripheral mocks",
+    "firmware_source_sha256": "916466feb6a8a3f562df49e03cd99ea7808fecf8c486dbfafff219882cac1961",
+    "physical": false,
+    "calibration": false
+  },
+  "nominal_4ch_mock_status_samples": [
+    "VMOCION_NOMINAL_2K_4CH_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2_AND_3_4 channel_mask=15 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=10001"
+  ],
+  "nominal_4ch_provenance": {
+    "source": "actual sketch under deterministic host peripheral mocks",
+    "firmware_source_sha256": "cae594c1acf68d33ef95167932950b1d0d120866e0503cd3240cfab110a29597",
+    "physical": false,
+    "calibration": false,
+    "second_resistor_confirmed": false
+  },
+  "nominal_1p5_mock_status_samples": [
+    "VMOCION_NOMINAL_2K_4CH_1P5MA_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 source_step_codes=3932 assumed_load_ohms=2000 pair=J2_1_2_AND_3_4 channel_mask=15 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=10001"
+  ],
+  "nominal_1p5_provenance": {
+    "source": "actual sketch under deterministic host peripheral mocks",
+    "firmware_source_sha256": "2d5467da47d79d3b22d0c9acffc3385fc79c37be640efc79dafd387586503e67",
+    "physical": false,
+    "calibration": false,
+    "second_resistor_confirmed": false,
+    "unrestricted_dac_full_scale": false
+  },
+  "nominal_2k_physical_idle_samples": [
+    "VMOCION_NOMINAL_2K_AB_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=3905",
+    "VMOCION_NOMINAL_2K_AB_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=4733",
+    "VMOCION_NOMINAL_2K_AB_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=5571"
+  ],
+  "nominal_2k_physical_scope": "USB idle status after application-only DFU; no output commands or analog measurements"
+}
