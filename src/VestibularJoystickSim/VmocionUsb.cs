@@ -79,7 +79,8 @@ namespace VestibularJoystickSim
         public static VmocionUsbStatus BenchStatus(string line)
         {
             string[] parts = line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            bool nominal2k = parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_AB_V1";
+            bool nominal4ch = parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_4CH_V1";
+            bool nominal2k = nominal4ch || (parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_AB_V1");
             if (parts.Length < 2 || (!nominal2k && parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4" && parts[0] != "VMOCION_BENCH_100K_PAIR_V5"))
                 throw new FormatException("Unsupported bench firmware");
             Dictionary<string, string> fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -93,7 +94,8 @@ namespace VestibularJoystickSim
                 if (!fields.ContainsKey(key) || (fields[key] != "0" && fields[key] != "1")) throw new FormatException("Missing/nonboolean bench status");
             uint uptime;
             if (!fields.ContainsKey("uptime_ms") || !uint.TryParse(fields["uptime_ms"], NumberStyles.None, CultureInfo.InvariantCulture, out uptime) ||
-                !fields.ContainsKey("pair") || fields["pair"] != "J2_1_2" ||
+                !fields.ContainsKey("pair") || fields["pair"] != (nominal4ch ? "J2_1_2_AND_3_4" : "J2_1_2") ||
+                (nominal4ch && (!fields.ContainsKey("channel_mask") || fields["channel_mask"] != "15")) ||
                 !fields.ContainsKey("assumed_load_ohms") || fields["assumed_load_ohms"] != (nominal2k ? "2000" : "100000") ||
                 (nominal2k && (!fields.ContainsKey("nominal_only") || fields["nominal_only"] != "1" ||
                     !fields.ContainsKey("calibration_present") || fields["calibration_present"] != "0")))
@@ -148,6 +150,10 @@ namespace VestibularJoystickSim
                 if (!BenchStatus(bench).OutputOff || !BenchStatus(bench).Blue || !BenchStatus(bench.Replace("V4", "V5")).OutputOff) return false;
                 string nominal = bench.Replace("VMOCION_BENCH_100K_PAIR_V4", "VMOCION_NOMINAL_2K_AB_V1").Replace("100000", "2000") + " nominal_only=1 calibration_present=0";
                 if (!BenchStatus(nominal).OutputOff || BenchStatus(nominal).Calibration) return false;
+                string all4 = nominal.Replace("VMOCION_NOMINAL_2K_AB_V1", "VMOCION_NOMINAL_2K_4CH_V1").Replace("pair=J2_1_2", "pair=J2_1_2_AND_3_4") + " channel_mask=15";
+                if (!BenchStatus(all4).OutputOff || BenchStatus(all4).Calibration) return false;
+                foreach (string bad in new string[] { all4.Replace("channel_mask=15", "channel_mask=3"), all4.Replace(" channel_mask=15", ""), all4.Replace("J2_1_2_AND_3_4", "J2_1_2"), all4.Replace("2000", "100000") })
+                    try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { nominal.Replace("2000", "100000"), nominal.Replace("nominal_only=1", "nominal_only=0"), nominal.Replace("calibration_present=0", "calibration_present=1"), nominal.Replace(" calibration_present=0", "") })
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { bench + " active=0", bench.Replace("fault_n=1", "fault_n=2"), bench.Replace("100000", "5000"), bench.Replace("V4", "V99"), bench.Replace(" uptime_ms=5000", "") })

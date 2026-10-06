@@ -25,5 +25,15 @@
     "firmware_source_sha256": "916466feb6a8a3f562df49e03cd99ea7808fecf8c486dbfafff219882cac1961",
     "physical": false,
     "calibration": false
+  },
+  "nominal_4ch_mock_status_samples": [
+    "VMOCION_NOMINAL_2K_4CH_V1 active=0 led_test_active=0 arm_pin=0 carrier_pin=0 green_led_on=0 blue_led_on=1 nominal_only=1 calibration_present=0 assumed_load_ohms=2000 pair=J2_1_2_AND_3_4 channel_mask=15 deadline_us=5000000 fault_n=1 fault_latched=0 boot_fault_seen=0 prepared=0 baseline_done=0 baseline_confirmed=0 deadline_event=0 target_written=0 uptime_ms=10001"
+  ],
+  "nominal_4ch_provenance": {
+    "source": "actual sketch under deterministic host peripheral mocks",
+    "firmware_source_sha256": "cae594c1acf68d33ef95167932950b1d0d120866e0503cd3240cfab110a29597",
+    "physical": false,
+    "calibration": false,
+    "second_resistor_confirmed": false
   }
 }

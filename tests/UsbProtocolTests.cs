@@ -51,6 +51,12 @@ internal static class UsbProtocolTests
                 Require(nominal.Firmware == "VMOCION_NOMINAL_2K_AB_V1" && nominal.OutputOff && nominal.Blue &&
                     !nominal.Calibration && !nominal.Credentials, "decode nominal 2k idle status produced by mocked sketch; not physical evidence");
             }
+            foreach (object raw in (System.Collections.IEnumerable)fixture["nominal_4ch_mock_status_samples"])
+            {
+                VmocionUsbStatus nominal = VmocionUsbProtocol.BenchStatus((string)raw);
+                Require(nominal.Firmware == "VMOCION_NOMINAL_2K_4CH_V1" && nominal.OutputOff && nominal.Blue &&
+                    !nominal.Calibration, "decode four-channel nominal idle status under mocks; not physical evidence");
+            }
             Console.WriteLine("USB codec verification passed; no output commands or analog measurements.");
             return 0;
         }
