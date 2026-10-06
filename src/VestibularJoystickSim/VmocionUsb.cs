@@ -79,7 +79,8 @@ namespace VestibularJoystickSim
         public static VmocionUsbStatus BenchStatus(string line)
         {
             string[] parts = line.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            bool nominal4ch = parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_4CH_V1";
+            bool nominal1p5 = parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_4CH_1P5MA_V1";
+            bool nominal4ch = nominal1p5 || (parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_4CH_V1");
             bool nominal2k = nominal4ch || (parts.Length > 0 && parts[0] == "VMOCION_NOMINAL_2K_AB_V1");
             if (parts.Length < 2 || (!nominal2k && parts[0] != "VMOCION_BENCH_100K_PAIR_V3" && parts[0] != "VMOCION_BENCH_100K_PAIR_V4" && parts[0] != "VMOCION_BENCH_100K_PAIR_V5"))
                 throw new FormatException("Unsupported bench firmware");
@@ -96,6 +97,7 @@ namespace VestibularJoystickSim
             if (!fields.ContainsKey("uptime_ms") || !uint.TryParse(fields["uptime_ms"], NumberStyles.None, CultureInfo.InvariantCulture, out uptime) ||
                 !fields.ContainsKey("pair") || fields["pair"] != (nominal4ch ? "J2_1_2_AND_3_4" : "J2_1_2") ||
                 (nominal4ch && (!fields.ContainsKey("channel_mask") || fields["channel_mask"] != "15")) ||
+                (nominal1p5 && (!fields.ContainsKey("source_step_codes") || fields["source_step_codes"] != "3932")) ||
                 !fields.ContainsKey("assumed_load_ohms") || fields["assumed_load_ohms"] != (nominal2k ? "2000" : "100000") ||
                 (nominal2k && (!fields.ContainsKey("nominal_only") || fields["nominal_only"] != "1" ||
                     !fields.ContainsKey("calibration_present") || fields["calibration_present"] != "0")))
@@ -152,6 +154,10 @@ namespace VestibularJoystickSim
                 if (!BenchStatus(nominal).OutputOff || BenchStatus(nominal).Calibration) return false;
                 string all4 = nominal.Replace("VMOCION_NOMINAL_2K_AB_V1", "VMOCION_NOMINAL_2K_4CH_V1").Replace("pair=J2_1_2", "pair=J2_1_2_AND_3_4") + " channel_mask=15";
                 if (!BenchStatus(all4).OutputOff || BenchStatus(all4).Calibration) return false;
+                string all4higher = all4.Replace("VMOCION_NOMINAL_2K_4CH_V1", "VMOCION_NOMINAL_2K_4CH_1P5MA_V1") + " source_step_codes=3932";
+                if (!BenchStatus(all4higher).OutputOff || BenchStatus(all4higher).Calibration) return false;
+                foreach (string bad in new string[] { all4higher.Replace(" source_step_codes=3932", ""), all4higher.Replace("source_step_codes=3932", "source_step_codes=26"), all4higher.Replace("channel_mask=15", "channel_mask=3") })
+                    try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { all4.Replace("channel_mask=15", "channel_mask=3"), all4.Replace(" channel_mask=15", ""), all4.Replace("J2_1_2_AND_3_4", "J2_1_2"), all4.Replace("2000", "100000") })
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { nominal.Replace("2000", "100000"), nominal.Replace("nominal_only=1", "nominal_only=0"), nominal.Replace("calibration_present=0", "calibration_present=1"), nominal.Replace(" calibration_present=0", "") })

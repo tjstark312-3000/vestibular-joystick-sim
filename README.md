@@ -20,6 +20,7 @@ check**, rather than the old release, to test the new USB connection.
   responses. Opening a COM port alone never marks the board verified.
 - Supports `VMOCION_BENCH_100K_PAIR_V3/V4/V5` and `VMOCION_NOMINAL_2K_AB_V1`
   / `VMOCION_NOMINAL_2K_4CH_V1`
+  / `VMOCION_NOMINAL_2K_4CH_1P5MA_V1`
   ASCII status and Minimal guarded-v1
   binary status, including unprovisioned receivers.
 - Validates guarded CRC/nonce/header/flags and bench fixture/state fields.
@@ -38,6 +39,10 @@ Its status requires the exact 2 kΩ fixture and explicit nominal-only/no-calibra
 flags; support is checked with synthetic data, not a live nominal-profile board.
 The four-channel profile additionally requires the two-pair fixture identifier
 and channel mask 15; its proposed second resistor is not yet physically confirmed.
+The higher-current profile additionally requires source_step_codes=3932. Its
+distinct identity does not establish measured delivery, and this app never
+launches its higher-current commands. The physical PCB has not been flashed
+with that profile.
 This application does not upgrade, downgrade or provision the firmware.
 Its reported fault signal and GPIO state do not measure delivered current or
 qualify the unspecified custom head phantom. A passive electrical head phantom
