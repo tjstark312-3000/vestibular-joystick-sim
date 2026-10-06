@@ -63,6 +63,17 @@ internal static class UsbProtocolTests
                 Require(nominal.Firmware == "VMOCION_NOMINAL_2K_4CH_1P5MA_V1" && nominal.OutputOff && nominal.Blue &&
                     !nominal.Calibration, "decode nominal 1.5mA source profile under mocks; not physical evidence");
             }
+            previous=0;first=true;
+            foreach(object raw in (System.Collections.IEnumerable)fixture["nominal_2k_physical_idle_samples"])
+            {
+                VmocionUsbStatus nominal=VmocionUsbProtocol.BenchStatus((string)raw);
+                Require(nominal.Firmware=="VMOCION_NOMINAL_2K_AB_V1" && nominal.OutputOff && nominal.IsNominalBench &&
+                    nominal.FaultHealthy && !nominal.FaultLatched && !nominal.Calibration && !nominal.Prepared &&
+                    !nominal.BaselineConfirmed && nominal.Blue, "decode physical nominal A/B idle reply after application-only DFU; no analog validation");
+                if(!first)Require(VmocionUsbProtocol.Advances(previous,nominal.Uptime), "physical nominal A/B uptime advances");
+                first=false;previous=nominal.Uptime;
+            }
+            Require(!first,"physical nominal A/B fixture present");
             Require(NominalBenchControl.SelfTest(), "nominal no-calibration bench command sequencing, operator gates, finite durations, faults, stale status and unexpected activation");
             Console.WriteLine("USB codec and bench-state verification passed under mocks; no hardware commands or analog measurements.");
             return 0;
