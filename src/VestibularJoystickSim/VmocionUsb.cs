@@ -10,8 +10,8 @@ using System.Threading;
 
 namespace VestibularJoystickSim
 {
-    // Engineering connection monitor. It has no output/arm/calibration API.
-    // Status describes firmware state; it does not measure analog delivery.
+    // Status describes firmware state, not measured analog delivery.
+    // Only identified nominal resistor sketches support finite bench commands.
     internal sealed class VmocionUsbStatus
     {
         public string Firmware;
@@ -19,6 +19,8 @@ namespace VestibularJoystickSim
         public bool Armed, Carrier, FaultHealthy, FaultLatched;
         public bool Calibration, Credentials, Replay, Permission;
         public bool Green, Blue;
+        public bool Prepared, BaselineDone, BaselineConfirmed, TargetWritten;
+        public bool IsNominalBench { get { return NominalBenchControl.Supported(Firmware); } }
         public string Raw;
         public long ReceivedTicks;
         public bool OutputOff { get { return !Armed && !Carrier; } }
@@ -29,8 +31,8 @@ namespace VestibularJoystickSim
             {
                 return Firmware + "; output " + (OutputOff ? "reported off" : "ACTIVE") +
                     "; fault " + (!FaultHealthy || FaultLatched ? "present" : "clear") +
-                    "; calibration " + (Calibration ? "valid" : "unqualified") +
-                    "; output control unavailable in this engineering build";
+                    "; calibration " + (IsNominalBench ? "not required (nominal resistor test)" : (Calibration ? "valid" : "unqualified")) +
+                    (IsNominalBench ? "; finite resistor-test control available" : "; output control unavailable for this firmware");
             }
         }
     }
@@ -93,6 +95,9 @@ namespace VestibularJoystickSim
             }
             foreach (string key in new string[] { "active", "arm_pin", "carrier_pin", "fault_n", "fault_latched", "green_led_on", "blue_led_on" })
                 if (!fields.ContainsKey(key) || (fields[key] != "0" && fields[key] != "1")) throw new FormatException("Missing/nonboolean bench status");
+            if (nominal2k)
+                foreach (string key in new string[] { "prepared", "baseline_done", "baseline_confirmed", "target_written" })
+                    if (!fields.ContainsKey(key) || (fields[key] != "0" && fields[key] != "1")) throw new FormatException("Missing/nonboolean nominal test state");
             uint uptime;
             if (!fields.ContainsKey("uptime_ms") || !uint.TryParse(fields["uptime_ms"], NumberStyles.None, CultureInfo.InvariantCulture, out uptime) ||
                 !fields.ContainsKey("pair") || fields["pair"] != (nominal4ch ? "J2_1_2_AND_3_4" : "J2_1_2") ||
@@ -106,6 +111,8 @@ namespace VestibularJoystickSim
                 Armed = fields["arm_pin"] == "1" || fields["active"] == "1", Carrier = fields["carrier_pin"] == "1",
                 FaultHealthy = fields["fault_n"] == "1", FaultLatched = fields["fault_latched"] == "1",
                 Green = fields["green_led_on"] == "1", Blue = fields["blue_led_on"] == "1",
+                Prepared = nominal2k && fields["prepared"] == "1", BaselineDone = nominal2k && fields["baseline_done"] == "1",
+                BaselineConfirmed = nominal2k && fields["baseline_confirmed"] == "1", TargetWritten = nominal2k && fields["target_written"] == "1",
                 ReceivedTicks = Stopwatch.GetTimestamp(), Raw = line };
         }
         public static bool Advances(uint previous, uint current)
@@ -150,7 +157,7 @@ namespace VestibularJoystickSim
                 try { GuardedStatus(response, 0x12345678); return false; } catch (FormatException) { }
                 string bench = "VMOCION_BENCH_100K_PAIR_V4 active=0 arm_pin=0 carrier_pin=0 fault_n=1 fault_latched=0 green_led_on=0 blue_led_on=1 assumed_load_ohms=100000 pair=J2_1_2 uptime_ms=5000";
                 if (!BenchStatus(bench).OutputOff || !BenchStatus(bench).Blue || !BenchStatus(bench.Replace("V4", "V5")).OutputOff) return false;
-                string nominal = bench.Replace("VMOCION_BENCH_100K_PAIR_V4", "VMOCION_NOMINAL_2K_AB_V1").Replace("100000", "2000") + " nominal_only=1 calibration_present=0";
+                string nominal = bench.Replace("VMOCION_BENCH_100K_PAIR_V4", "VMOCION_NOMINAL_2K_AB_V1").Replace("100000", "2000") + " nominal_only=1 calibration_present=0 prepared=0 baseline_done=0 baseline_confirmed=0 target_written=0";
                 if (!BenchStatus(nominal).OutputOff || BenchStatus(nominal).Calibration) return false;
                 string all4 = nominal.Replace("VMOCION_NOMINAL_2K_AB_V1", "VMOCION_NOMINAL_2K_4CH_V1").Replace("pair=J2_1_2", "pair=J2_1_2_AND_3_4") + " channel_mask=15";
                 if (!BenchStatus(all4).OutputOff || BenchStatus(all4).Calibration) return false;
@@ -164,9 +171,117 @@ namespace VestibularJoystickSim
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
                 foreach (string bad in new string[] { bench + " active=0", bench.Replace("fault_n=1", "fault_n=2"), bench.Replace("100000", "5000"), bench.Replace("V4", "V99"), bench.Replace(" uptime_ms=5000", "") })
                     try { BenchStatus(bad); return false; } catch (FormatException) { }
-                return Advances(0xfffffffe, 2) && !Advances(5000, 5000) && !Advances(5000, 4) &&
+                return NominalBenchControl.SelfTest() && Advances(0xfffffffe, 2) && !Advances(5000, 5000) && !Advances(5000, 4) &&
                     SupportedHardware("USB\\VID_2886&PID_8045\\test") && !SupportedHardware("USB\\VID_2886&PID_0045") &&
                     !SupportedHardware("USB\\VID_0403&PID_6001") && PortInName("Device (COM10)") == "COM10" && PortInName("COM1 text") == null;
+            }
+            catch { return false; }
+        }
+    }
+
+    internal sealed class NominalBenchControl
+    {
+        public enum Stage { Idle, Baseline, BaselineReady, Pulse, Complete, Failed }
+        private volatile Stage stage;
+        private string firmware;
+        private long deadlineMs;
+        private bool seenPulse;
+        public Stage Phase { get { return stage; } }
+        public bool ExpectsActive { get { return stage == Stage.Baseline || stage == Stage.Pulse; } }
+        public static bool Supported(string id)
+        {
+            return id == "VMOCION_NOMINAL_2K_AB_V1" || id == "VMOCION_NOMINAL_2K_4CH_V1" || id == "VMOCION_NOMINAL_2K_4CH_1P5MA_V1";
+        }
+        private static void Require(bool value, string text) { if (!value) throw new InvalidOperationException(text); }
+        private static void Healthy(VmocionUsbStatus s)
+        {
+            Require(s != null && s.Fresh && Supported(s.Firmware) && s.FaultHealthy && !s.FaultLatched,
+                "A fresh, fault-free nominal resistor-test firmware response is required.");
+        }
+        public string[] BeginBaseline(VmocionUsbStatus s, bool fixtureConfirmed, long now)
+        {
+            Healthy(s);
+            Require(fixtureConfirmed && s.OutputOff && !ExpectsActive, "Confirm the exact resistor-only fixture with output off.");
+            firmware = s.Firmware; stage = Stage.Baseline; deadlineMs = now + 7000; seenPulse = false;
+            string prepare = firmware == "VMOCION_NOMINAL_2K_AB_V1" ? "PREPARE_2K_AB" :
+                (firmware == "VMOCION_NOMINAL_2K_4CH_V1" ? "PREPARE_2X2K_ABCD" : "PREPARE_2X2K_1P5MA");
+            return new string[] { prepare, "BASELINE" };
+        }
+        public string[] BeginPulse(VmocionUsbStatus s, bool zeroConfirmed, int durationMs, long now)
+        {
+            Healthy(s);
+            Require(s.Firmware == firmware && stage == Stage.BaselineReady && s.OutputOff && s.Prepared && s.BaselineDone && zeroConfirmed,
+                "Complete and observe the zero baseline before confirming it.");
+            Require(durationMs == 5000 || durationMs == 20000, "Only fixed 5 s or 20 s tests are supported.");
+            string command = firmware == "VMOCION_NOMINAL_2K_AB_V1" ? "PAIR_TEST" :
+                (firmware == "VMOCION_NOMINAL_2K_4CH_V1" ? "ALL4_TEST" : "ALL4_1P5MA_TEST");
+            stage = Stage.Pulse; deadlineMs = now + durationMs + 2000; seenPulse = false;
+            return new string[] { "CONFIRM_BASELINE", command + (durationMs == 20000 ? "_20S" : "") };
+        }
+        public void Observe(VmocionUsbStatus s, long now)
+        {
+            if (!ExpectsActive)
+            {
+                Require(s.OutputOff, "Unexpected active output; stop requested.");
+                if (stage == Stage.BaselineReady && (!s.Prepared || !s.BaselineDone || !s.FaultHealthy || s.FaultLatched || s.Firmware != firmware)) stage = Stage.Failed;
+                return;
+            }
+            Healthy(s);
+            Require(s.Firmware == firmware && s.Prepared && now <= deadlineMs, "Test lost its fixture state, firmware identity or deadline.");
+            if (stage == Stage.Baseline)
+            {
+                Require(!s.TargetWritten && !s.BaselineConfirmed, "Nonzero target/confirmation reported during zero baseline.");
+                if (s.OutputOff && s.BaselineDone) stage = Stage.BaselineReady;
+            }
+            else
+            {
+                if (!s.OutputOff) { Require(s.BaselineConfirmed, "Active test without baseline confirmation."); seenPulse = true; }
+                else if (seenPulse) stage = Stage.Complete;
+            }
+        }
+        public void Stop() { stage = Stage.Idle; firmware = null; seenPulse = false; }
+        public void Fail() { stage = Stage.Failed; }
+        public static bool SelfTest()
+        {
+            try
+            {
+                foreach (string id in new string[] { "VMOCION_NOMINAL_2K_AB_V1", "VMOCION_NOMINAL_2K_4CH_V1", "VMOCION_NOMINAL_2K_4CH_1P5MA_V1" })
+                {
+                    VmocionUsbStatus s = new VmocionUsbStatus { Firmware=id, FaultHealthy=true, ReceivedTicks=Stopwatch.GetTimestamp() };
+                    NominalBenchControl c = new NominalBenchControl();
+                    try { c.BeginPulse(s,true,5000,0); return false; } catch (InvalidOperationException) { }
+                    try { c.BeginBaseline(s,false,0); return false; } catch (InvalidOperationException) { }
+                    string[] baseline = c.BeginBaseline(s,true,0);
+                    if (baseline[1] != "BASELINE" || s.Calibration || s.Credentials) return false;
+                    s.Prepared=true; s.Armed=true; c.Observe(s,1000); s.Armed=false; s.BaselineDone=true; c.Observe(s,5100);
+                    if (c.Phase != Stage.BaselineReady) return false;
+                    try { c.BeginPulse(s,false,5000,5200); return false; } catch (InvalidOperationException) { }
+                    try { c.BeginPulse(s,true,60000,5200); return false; } catch (InvalidOperationException) { }
+                    string[] pulse=c.BeginPulse(s,true,20000,5200);
+                    if (pulse[0] != "CONFIRM_BASELINE" || !pulse[1].EndsWith("_20S",StringComparison.Ordinal)) return false;
+                    s.Armed=true; s.BaselineConfirmed=true; c.Observe(s,5400);
+                    s.Armed=false; c.Observe(s,25200); if(c.Phase != Stage.Complete) return false;
+                    try { c.BeginPulse(s,true,5000,26000); return false; } catch (InvalidOperationException) { }
+                    c.Stop(); s.Armed=true; try { c.Observe(s,26000); return false; } catch (InvalidOperationException) { }
+                }
+                VmocionUsbStatus unsafeStatus=new VmocionUsbStatus { Firmware="VMocion Minimal guarded-v1", FaultHealthy=true, ReceivedTicks=Stopwatch.GetTimestamp() };
+                try { new NominalBenchControl().BeginBaseline(unsafeStatus,true,0); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.Firmware="VMOCION_NOMINAL_2K_AB_V1";unsafeStatus.FaultLatched=true;
+                try { new NominalBenchControl().BeginBaseline(unsafeStatus,true,0); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.FaultLatched=false;unsafeStatus.ReceivedTicks=0;
+                try { new NominalBenchControl().BeginBaseline(unsafeStatus,true,0); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.ReceivedTicks=Stopwatch.GetTimestamp();
+                NominalBenchControl late=new NominalBenchControl();late.BeginBaseline(unsafeStatus,true,0);unsafeStatus.Prepared=true;
+                try { late.Observe(unsafeStatus,7001); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.Prepared=false;
+                NominalBenchControl interrupted=new NominalBenchControl();interrupted.BeginBaseline(unsafeStatus,true,0);
+                unsafeStatus.Prepared=true;unsafeStatus.FaultHealthy=false;
+                try { interrupted.Observe(unsafeStatus,1000); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.FaultHealthy=true;unsafeStatus.TargetWritten=true;
+                try { interrupted.Observe(unsafeStatus,1000); return false; } catch (InvalidOperationException) { }
+                unsafeStatus.TargetWritten=false;unsafeStatus.Firmware="VMOCION_NOMINAL_2K_4CH_V1";
+                try { interrupted.Observe(unsafeStatus,1000); return false; } catch (InvalidOperationException) { }
+                return true;
             }
             catch { return false; }
         }
@@ -179,11 +294,34 @@ namespace VestibularJoystickSim
         private volatile VmocionUsbStatus latest;
         private volatile string error;
         private int sampleCount;
+        private readonly NominalBenchControl benchControl = new NominalBenchControl();
+        private readonly object queueLock = new object();
+        private Action<SerialPort> pending;
+        private volatile bool stopRequested;
+        private volatile bool benchSessionTouched;
+        private int benchCommands;
+        private volatile string lastBenchCommand = "none";
+        public int BenchCommands { get { return benchCommands; } }
+        public string LastBenchCommand { get { return lastBenchCommand; } }
+        public NominalBenchControl.Stage BenchPhase { get { return benchControl.Phase; } }
         public string PortName { get; private set; }
         public bool IsOpen { get { return !stopping && error == null; } }
         public string Error { get { return error; } }
         public VmocionUsbStatus Latest { get { return latest; } }
-        public bool Verified { get { VmocionUsbStatus s = latest; return sampleCount >= 2 && s != null && s.Fresh && s.OutputOff && IsOpen; } }
+        public bool Verified { get { VmocionUsbStatus s = latest; return sampleCount >= 2 && s != null && s.Fresh && (s.OutputOff || benchControl.ExpectsActive) && IsOpen; } }
+        public bool BenchAvailable { get { VmocionUsbStatus s=latest; return Verified && s.IsNominalBench && s.FaultHealthy && !s.FaultLatched; } }
+        private static long NowMs { get { return (long)(Stopwatch.GetTimestamp()*1000.0/Stopwatch.Frequency); } }
+        private void Queue(Action<SerialPort> action)
+        {
+            lock(queueLock) { if (!BenchAvailable || pending != null) throw new InvalidOperationException("Bench connection is unavailable or a command is pending."); pending=action; }
+        }
+        private void SendCommands(SerialPort link, string[] commands)
+        {
+            foreach(string command in commands) { link.Write(command+"\n");lastBenchCommand=command;Interlocked.Increment(ref benchCommands); }
+        }
+        public void BeginBaseline(bool fixtureConfirmed) { Queue(delegate(SerialPort link) { SendCommands(link,benchControl.BeginBaseline(latest,fixtureConfirmed,NowMs)); }); }
+        public void BeginPulse(bool zeroConfirmed,int durationMs) { Queue(delegate(SerialPort link) { SendCommands(link,benchControl.BeginPulse(latest,zeroConfirmed,durationMs,NowMs)); }); }
+        public void StopBench() { lock(queueLock) { pending=null; stopRequested=benchSessionTouched; } }
         public VmocionUsbMonitor(string name)
         {
             if (VmocionUsbProtocol.PortInName("Device (" + name + ")") != name) throw new ArgumentException("A Windows COM port is required.");
@@ -215,13 +353,19 @@ namespace VestibularJoystickSim
                     VmocionUsbStatus previous = first;
                     while (!stopping)
                     {
+                        if (stopRequested) { if (bench && latest != null && latest.IsNominalBench) SendCommands(link,new string[] { "STOP" }); benchControl.Stop(); stopRequested=false; }
+                        Action<SerialPort> action;
+                        lock(queueLock) { action=pending;pending=null; }
+                        if(action != null) { if(!BenchAvailable) throw new InvalidOperationException("Fresh bench status lost before command.");benchSessionTouched=true;action(link); }
                         VmocionUsbStatus next = first ?? (bench ? ReadBench(link) : ReadGuarded(link)); first = null;
-                        if (!next.OutputOff) throw new InvalidOperationException("Firmware reports active output; connection closed. Disconnect PCB power if output persists.");
+                        try { benchControl.Observe(next,NowMs); }
+                        catch { if(bench && next.IsNominalBench) SendCommands(link,new string[] { "STOP" });benchControl.Fail();throw; }
                         if (sampleCount > 0 && !VmocionUsbProtocol.Advances(previous.Uptime, next.Uptime))
                             throw new InvalidOperationException("Firmware reset or nonadvancing status; reconnect required.");
                         previous = next; latest = next; Interlocked.Increment(ref sampleCount);
-                        for (int i = 0; i < 25 && !stopping; ++i) Thread.Sleep(10);
+                        for (int i = 0; i < 25 && !stopping && !stopRequested; ++i) Thread.Sleep(10);
                     }
+                    if (benchSessionTouched && bench && latest != null && latest.IsNominalBench) SendCommands(link,new string[] { "STOP" });
                 }
             }
             catch (Exception ex) { if (!stopping) error = ex.Message; }
@@ -264,6 +408,7 @@ namespace VestibularJoystickSim
         }
         public void Close()
         {
+            StopBench();
             stopping = true;
             if (worker != null && worker != Thread.CurrentThread) worker.Join(1600);
         }

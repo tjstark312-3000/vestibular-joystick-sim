@@ -376,7 +376,7 @@ namespace VestibularJoystickSim
             deviceButtons.Controls.Add(refreshButton, 1, 0);
             deviceButtons.Controls.Add(connectButton, 2, 0);
 
-            armButton = MakeButton("Arm");
+            armButton = MakeButton("Resistor test");
             armButton.Enabled = false;
             armButton.Click += ArmButtonClick;
 
@@ -498,7 +498,7 @@ namespace VestibularJoystickSim
             toolTip.SetToolTip(gainSlider, "Software preview scale only; not a physical current setting or biological safety limit.");
             toolTip.SetToolTip(portCombo, "Detects a XIAO application USB port, then verifies firmware status. Legacy FTDI devices are unsupported in this build.");
             toolTip.SetToolTip(refreshButton, "Rescan Windows serial devices.");
-            toolTip.SetToolTip(connectButton, "Connect or disconnect the XIAO USB status monitor. This does not authorize electrical output.");
+            toolTip.SetToolTip(connectButton, "Verify XIAO firmware over USB. Connection never starts electrical output.");
             toolTip.SetToolTip(armButton, "Physical output control is unavailable in this engineering USB compatibility build.");
             toolTip.SetToolTip(msfsLaunchButton, "Open Microsoft Flight Simulator and select its motion feed.");
             toolTip.SetToolTip(forzaLaunchButton, "Open Forza Horizon 5 and select its motion feed.");
@@ -774,11 +774,11 @@ namespace VestibularJoystickSim
             {
                 serialPort = new VmocionUsbMonitor(portCombo.SelectedItem.ToString());
                 packetCount = 0;
-                lastPacketText = "Status requests only; no output packets";
+                lastPacketText = "Status requests; resistor tests require explicit operator actions";
                 connectButton.Text = "Disconnect";
                 portCombo.Enabled = false;
                 armButton.Enabled = false;
-                SetStatus("Checking firmware - output control unavailable");
+                SetStatus("Checking firmware - output off");
                 UpdateUi();
                 return true;
             }
@@ -899,8 +899,69 @@ namespace VestibularJoystickSim
         private void ArmButtonClick(object sender, EventArgs e)
         {
             armed = false;
-            SetStatus("Physical output control unavailable in this engineering build");
+            if (serialPort != null && serialPort.BenchAvailable) ShowResistorTest();
+            else SetStatus("Resistor test requires nominal firmware and a fault-free USB connection");
             UpdateUi();
+        }
+
+        private void ShowResistorTest()
+        {
+            VmocionUsbMonitor connection = serialPort;
+            VmocionUsbStatus initial = connection.Latest;
+            bool twoPairs = initial.Firmware != "VMOCION_NOMINAL_2K_AB_V1";
+            bool higher = initial.Firmware == "VMOCION_NOMINAL_2K_4CH_1P5MA_V1";
+            using (Form dialog = new Form())
+            using (System.Windows.Forms.Timer refresh = new System.Windows.Forms.Timer())
+            {
+                dialog.Text = "VFORCE resistor test";
+                dialog.ClientSize = new Size(690, 330);
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.BackColor = Theme.Background; dialog.ForeColor = Theme.Text; dialog.Font = Font;
+                Label description = new Label(); description.SetBounds(18, 15, 650, 62);
+                description.Text = "Fixed nominal DAC codes; measured calibration is not required.\r\n" +
+                    (higher ? "1.500 mA nominal source per pair" : "0.010 mA nominal source per pair") +
+                    "; selected resistor load. Actual delivered current has not been verified.\r\nJoystick, game and head-preview motion do not drive this test.";
+                CheckBox fixture = new CheckBox(); fixture.SetBounds(18, 82, 650, 42);
+                fixture.Text = twoPairs ? "Only two plain 2 kΩ resistors across J2 1–2 and 3–4; no person or electrodes." :
+                    "Only one plain 2 kΩ resistor across J2 1–2; no person or electrodes.";
+                Label meter = new Label(); meter.SetBounds(18, 128, 650, 30);
+                meter.Text = "Meter in DC-voltage mode across the resistor; watch the five-second zero baseline.";
+                Button baseline = MakeButton("Zero baseline (5 s)"); baseline.SetBounds(18, 162, 185, 38);
+                CheckBox zero = new CheckBox(); zero.SetBounds(218, 158, 455, 47);
+                zero.Text = "I observed 0.000 V throughout the completed baseline.";
+                Button pulse = MakeButton("Output (5 s)"); pulse.SetBounds(18, 218, 170, 40);
+                Button longPulse = MakeButton("Output (20 s)"); longPulse.SetBounds(198, 218, 170, 40);
+                Button stop = MakeButton("STOP"); stop.SetBounds(384, 218, 130, 40); stop.BackColor = Theme.Danger;
+                Label state = new Label(); state.SetBounds(18, 276, 650, 45);
+                Action<Action> attempt = delegate(Action action) {
+                    try { action(); } catch (Exception ex) { state.Text = ex.Message; }
+                };
+                baseline.Click += delegate { zero.Checked=false; attempt(delegate { connection.BeginBaseline(fixture.Checked); }); };
+                pulse.Click += delegate { attempt(delegate { connection.BeginPulse(zero.Checked,5000); }); };
+                longPulse.Click += delegate { attempt(delegate { connection.BeginPulse(zero.Checked,20000); }); };
+                stop.Click += delegate { connection.StopBench(); zero.Checked=false; };
+                fixture.CheckedChanged += delegate { if(!fixture.Checked) { connection.StopBench();zero.Checked=false; } };
+                refresh.Interval = 250;
+                refresh.Tick += delegate {
+                    bool available = connection == serialPort && connection.BenchAvailable;
+                    NominalBenchControl.Stage phase = connection.BenchPhase;
+                    bool running = phase == NominalBenchControl.Stage.Baseline || phase == NominalBenchControl.Stage.Pulse;
+                    bool ready = available && phase == NominalBenchControl.Stage.BaselineReady;
+                    baseline.Enabled = available && fixture.Checked && !running;
+                    zero.Enabled = ready;
+                    if(!ready) zero.Checked=false;
+                    pulse.Enabled = longPulse.Enabled = ready && fixture.Checked && zero.Checked;
+                    state.Text = connection.Error != null ? connection.Error :
+                        (running ? "ACTIVE: " + phase + " · firmware timer stops output automatically" :
+                        (phase == NominalBenchControl.Stage.BaselineReady ? "Baseline complete; confirm the meter reading before output." :
+                        (available ? "Reported output off · " + phase : "Connection unavailable; output state unverified.")));
+                };
+                dialog.FormClosing += delegate { refresh.Stop(); connection.StopBench(); };
+                dialog.Controls.AddRange(new Control[] { description,fixture,meter,baseline,zero,pulse,longPulse,stop,state });
+                baseline.Enabled = pulse.Enabled = longPulse.Enabled = zero.Enabled = false;
+                state.Text = "Confirm the resistor-only fixture to begin.";
+                refresh.Start(); dialog.ShowDialog(this);
+            }
         }
 
         private void PauseButtonClick(object sender, EventArgs e)
@@ -908,6 +969,7 @@ namespace VestibularJoystickSim
             paused = !paused;
             if (paused)
             {
+                if(serialPort != null) serialPort.StopBench();
                 StopCalibration();
                 SendNeutralOutput();
                 SetStatus("Preview paused; no output commands sent");
@@ -1221,8 +1283,8 @@ namespace VestibularJoystickSim
             }
             inputLabel.Text = inputState;
 
-            armButton.Text = "Preview only";
-            armButton.Enabled = false;
+            armButton.Text = "Resistor test";
+            armButton.Enabled = serialPort != null && serialPort.BenchAvailable;
             armButton.BackColor = armed ? Theme.Danger : Theme.Purple;
             armButton.ForeColor = Color.White;
             armButton.FlatAppearance.BorderColor = armed ? Theme.Danger : Theme.PurpleBright;
@@ -1235,9 +1297,11 @@ namespace VestibularJoystickSim
             bool verified = deviceConnected && serialPort.Verified;
             deviceBadge.SetStatus(verified ? "USB VERIFIED" : (deviceConnected ? "CHECKING USB" : "DISCONNECTED"),
                 verified ? BadgeState.Ready : BadgeState.Neutral);
-            outputBadge.SetStatus(verified ? "REPORTED OFF" : "UNVERIFIED", BadgeState.Neutral);
+            bool benchActive = verified && serialPort.Latest != null && !serialPort.Latest.OutputOff;
+            outputBadge.SetStatus(verified ? (benchActive ? "BENCH ACTIVE" : "REPORTED OFF") : "UNVERIFIED", benchActive ? BadgeState.Ready : BadgeState.Neutral);
             if (deviceConnected && serialPort.Latest != null)
-                SetStatus(verified ? ((!serialPort.Latest.FaultHealthy || serialPort.Latest.FaultLatched) ? "Hardware fault reported; preview only" : "USB verified; preview only") : "Checking firmware; preview only");
+                SetStatus(verified ? ((!serialPort.Latest.FaultHealthy || serialPort.Latest.FaultLatched) ? "Fault latch/input reported; output unavailable" :
+                    (serialPort.Latest.IsNominalBench ? "USB verified; resistor test " + serialPort.BenchPhase : "USB verified; preview only")) : "Checking firmware; output state unverified");
 
             UpdateGameButton(msfsLaunchButton, "FLIGHT SIM", UseMsfsPhysics(), msfsFresh);
             UpdateGameButton(forzaLaunchButton, "FORZA 5", UseForzaPhysics(), forzaFresh);
@@ -1394,13 +1458,13 @@ namespace VestibularJoystickSim
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "VMocion: " + ((serialPort != null && serialPort.IsOpen) ? serialPort.PortName + " connected" : "not connected") + "\r\n" +
                 "Available ports: " + (ports.Length == 0 ? "none" : string.Join(", ", ports)) + "\r\n" +
-                "Output: " + ((serialPort != null && serialPort.Verified) ? "REPORTED OFF" : "UNVERIFIED") + "\r\n" +
+                "Output: " + ((serialPort != null && serialPort.Verified) ? (serialPort.Latest.OutputOff ? "REPORTED OFF" : "BENCH ACTIVE") : "UNVERIFIED") + "\r\n" +
                 "Firmware: " + ((serialPort != null && serialPort.Latest != null) ? serialPort.Latest.Summary : "not verified") + "\r\n" +
                 "Last RX: " + ((serialPort != null && serialPort.Latest != null) ? serialPort.Latest.Raw : "none") + "\r\n" +
                 "Analog current feedback: unavailable on this PCB\r\n" +
                 "Software preview peak: " + FormatCurrentPeakLabel(currentPeakMilliamp) + "\r\n" +
-                "Output packets sent: " + packetCount.ToString() + "\r\n" +
-                "Last TX: " + lastPacketText;
+                "Bench commands sent: " + (serialPort != null ? serialPort.BenchCommands.ToString() : "0") + "\r\n" +
+                "Last bench TX: " + (serialPort != null ? serialPort.LastBenchCommand : "none");
 
             Form dialog = new Form();
             dialog.Text = "VFORCE Advanced";
