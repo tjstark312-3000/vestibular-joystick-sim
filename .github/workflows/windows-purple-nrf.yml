@@ -1,0 +1,63 @@
+name: Purple NRF Windows build
+
+on:
+  push:
+    branches:
+      - codex/purple-nrf-calibration-2026-10-27
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run device-free tests
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Check handheld layout and capture UI
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe'
+          $screenshots = Join-Path $PWD 'outputs\ui-smoke'
+          New-Item -ItemType Directory -Force -Path $screenshots | Out-Null
+          $test = Start-Process -FilePath $exe -ArgumentList '--ui-smoke-test', $screenshots -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "UI smoke test failed: $($test.ExitCode)" }
+
+      - name: Package executable, runtime dependency and instructions
+        shell: pwsh
+        run: |
+          $name = 'VFORCE-Purple-NRF-2026.10.27'
+          $package = Join-Path $PWD "outputs\$name"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
+          Copy-Item 'outputs\vestibular-joystick-sim\SimConnect.dll' $package
+          Copy-Item README.md (Join-Path $package 'READ-ME-FIRST.md')
+          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false" |
+            Set-Content -Encoding utf8 (Join-Path $package 'BUILD-INFO.txt')
+          Get-ChildItem -LiteralPath $package -File | Sort-Object Name | ForEach-Object {
+            $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -Encoding ascii (Join-Path $package 'SHA256SUMS.txt')
+          Compress-Archive -Path "$package\*" -DestinationPath "outputs\$name.zip" -Force
+
+      - name: Upload Windows download
+        uses: actions/upload-artifact@v4
+        with:
+          name: VFORCE-Purple-NRF-2026.10.27
+          if-no-files-found: error
+          path: |
+            outputs/VFORCE-Purple-NRF-2026.10.27.zip
+            outputs/VFORCE-Purple-NRF-2026.10.27/
+
+      - name: Upload UI verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VFORCE-Purple-NRF-UI-check
+          if-no-files-found: warn
+          path: outputs/ui-smoke/

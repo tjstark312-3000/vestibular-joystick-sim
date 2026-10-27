@@ -33,3 +33,9 @@
 !work/vestibular-exe-builder/VestibularJoystickSim.test.exe
 !tools/
 !tools/make_icon.py
+
+!src/VestibularJoystickSim/SerialOutput.cs
+!src/VestibularJoystickSim/SerialOutputTests.cs
+!src/VestibularJoystickSim/ClassicNrfProfile.cs
+!src/VestibularJoystickSim/GameTelemetry.cs
+!.github/workflows/windows-purple-nrf.yml

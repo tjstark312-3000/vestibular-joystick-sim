@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.IO.Ports;
 using System.Management;
 using System.Net;
@@ -15,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace VestibularJoystickSim
 {
@@ -29,7 +30,14 @@ namespace VestibularJoystickSim
         {
             if (args.Length > 0 && string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
-                return PacketBuilder.SelfTest() && MainForm.SelfTest() ? 0 : 2;
+                return PacketBuilder.SelfTest() && MainForm.SelfTest() && ClassicNrfProfile.SelfTest() && SerialOutputTests.Run() && ForzaUdpTelemetryInput.LoopbackSelfTest() ? 0 : 2;
+            }
+
+            if (args.Length > 1 && args[0] == "--ui-smoke-test")
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                return MainForm.UiSmokeTest(args[1]);
             }
 
             bool createdNew;
@@ -64,10 +72,9 @@ namespace VestibularJoystickSim
         private const double GvsMaxRate = 3.14 / 4.0;
         private const double GvsMaxRamp = 0.03;
         private const double PacketValueToVolts = 0.15;
-        private const double MaxCurrentPeakMilliamp = 2.5;
+        private const double MaxCurrentPeakMilliamp = ClassicNrfProfile.MaximumNominalMilliamp;
         private const double DefaultCurrentPeakMilliamp = 0.5;
         private const int CurrentPeakSliderScale = 100;
-        private const double SerialSendIntervalSeconds = 0.025;
         private const int MsfsSimConnectMessage = 0x0402;
 
         private readonly PhysicalStickView stickView;
@@ -81,6 +88,8 @@ namespace VestibularJoystickSim
         private readonly Button connectButton;
         private readonly Button armButton;
         private readonly Button pauseButton;
+        private readonly Button calLeftButton, calRightButton, stopCalButton;
+        private readonly bool offlineMode;
         private readonly Button refreshButton;
         private readonly Button msfsLaunchButton;
         private readonly Button forzaLaunchButton;
@@ -96,9 +105,12 @@ namespace VestibularJoystickSim
         private readonly Image forzaGameImage;
         private readonly Label inputLabel;
 
-        private SerialPort serialPort;
+        private readonly SerialOutput serialOutput;
+        private string connectedPortName;
+        private readonly Stopwatch connectionAge = new Stopwatch();
+        private readonly Stopwatch calibrationClock = new Stopwatch();
+        private bool armed { get { return serialOutput.Status.Armed; } }
         private DateTime lastTick;
-        private DateTime lastSerialSend = DateTime.MinValue;
         private DateTime lastSerialScan = DateTime.MinValue;
         private DateTime lastAutoConnectAttempt = DateTime.MinValue;
         private DateTime lastUiTextUpdate = DateTime.MinValue;
@@ -135,23 +147,24 @@ namespace VestibularJoystickSim
         private readonly int[] currentBytes = new int[] { 128, 128, 128, 128 };
         private readonly double[] currentMilliampValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
         private readonly double[] dacValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
-        private string lastPacketText = "-";
+        private string lastPacketText { get { return serialOutput.Status.LastPacket; } }
         private double currentPeakMilliamp = DefaultCurrentPeakMilliamp;
         private bool paused;
-        private bool armed;
-        private int packetCount;
+        private int packetCount { get { return serialOutput.Status.PacketCount; } }
         private int calibrationDirection;
-        private int calibrationStep;
-        private DateTime calibrationStart;
 
-        public MainForm()
+        public MainForm() : this(false) { }
+
+        private MainForm(bool offline)
         {
+            offlineMode = offline;
+            serialOutput = new SerialOutput(new OutputClock(), !offline);
             SuspendLayout();
             Text = "VFORCE | Vestibular Simulation Console";
             Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             AutoScaleMode = AutoScaleMode.None;
             ClientSize = new Size(1180, 650);
-            MinimumSize = new Size(1000, 620);
+            MinimumSize = new Size(1140, 660);
             BackColor = Theme.Background;
             ForeColor = Theme.Text;
             Font = new Font("Segoe UI", 9.0f);
@@ -261,7 +274,7 @@ namespace VestibularJoystickSim
             gainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
             gainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             gainCard.Controls.Add(gainLayout);
-            Label gainTitle = MakeSectionTitle("INTENSITY LIMIT   /   PEAK CURRENT");
+            Label gainTitle = MakeSectionTitle("NOMINAL COMMAND LIMIT");
             gainTitle.Dock = DockStyle.Fill;
             gainLayout.Controls.Add(gainTitle, 0, 0);
 
@@ -284,7 +297,7 @@ namespace VestibularJoystickSim
             gainSlider.Dock = DockStyle.Fill;
             gainSlider.Margin = new Padding(14, 2, 26, 0);
             gainSlider.AccessibleName = "Peak stimulation current";
-            gainSlider.AccessibleDescription = "Sets the peak output current from zero to 2.50 milliamps.";
+            gainSlider.AccessibleDescription = "Nominal command limit from zero to 1.50 milliamps; delivered current is not measured.";
             gainSlider.Scroll += GainSliderScroll;
             gainControl.Controls.Add(gainSlider, 0, 0);
 
@@ -344,6 +357,15 @@ namespace VestibularJoystickSim
             pauseButton = MakeButton("Pause");
             pauseButton.Click += PauseButtonClick;
 
+            calLeftButton = MakeButton("Left Cal");
+            calRightButton = MakeButton("Right Cal");
+            stopCalButton = MakeButton("Stop Cal");
+            calLeftButton.AccessibleName = "Left Cal";
+            calRightButton.AccessibleName = "Right Cal";
+            calLeftButton.Click += delegate { StartCalibration(1); };
+            calRightButton.Click += delegate { StartCalibration(-1); };
+            stopCalButton.Click += delegate { CancelCalibration(); };
+
             Button diagnosticsButton = MakeButton("Advanced");
             diagnosticsButton.Width = 108;
             diagnosticsButton.Click += ShowDiagnostics;
@@ -364,7 +386,9 @@ namespace VestibularJoystickSim
             TableLayoutPanel actionFlow = new TableLayoutPanel();
             actionFlow.Dock = DockStyle.Fill;
             actionFlow.ColumnCount = 3;
-            actionFlow.RowCount = 1;
+            actionFlow.RowCount = 2;
+            actionFlow.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            actionFlow.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
@@ -377,6 +401,12 @@ namespace VestibularJoystickSim
             actionFlow.Controls.Add(armButton, 0, 0);
             actionFlow.Controls.Add(pauseButton, 1, 0);
             actionFlow.Controls.Add(diagnosticsButton, 2, 0);
+            SetFillButton(calLeftButton);
+            SetFillButton(calRightButton);
+            SetFillButton(stopCalButton);
+            actionFlow.Controls.Add(calLeftButton, 0, 1);
+            actionFlow.Controls.Add(calRightButton, 1, 1);
+            actionFlow.Controls.Add(stopCalButton, 2, 1);
             simulationLayout.Controls.Add(actionFlow, 0, 1);
 
             TableLayoutPanel workspace = new TableLayoutPanel();
@@ -456,13 +486,16 @@ namespace VestibularJoystickSim
             safetyFooter.AutoEllipsis = true;
             footerLayout.Controls.Add(safetyFooter, 1, 0);
 
-            toolTip.SetToolTip(gainSlider, "Peak current safety limit. Starts at 0.50 mA and is not persisted between sessions.");
-            toolTip.SetToolTip(portCombo, "Automatically selects a detected VMocion/FTDI serial device. You can also choose a COM port manually.");
+            toolTip.SetToolTip(gainSlider, "Nominal command limit for NRF v0.8.1. Starts at 0.50 mA; delivered current is not measured.");
+            toolTip.SetToolTip(portCombo, "Detects XIAO NRF52840 application ports. Choose the NRF COM port manually when needed.");
             toolTip.SetToolTip(refreshButton, "Rescan Windows serial devices.");
             toolTip.SetToolTip(connectButton, "Connect or disconnect the selected VMocion serial device.");
             toolTip.SetToolTip(armButton, "Explicitly enable live output. Output always starts disarmed.");
-            toolTip.SetToolTip(msfsLaunchButton, "Open Microsoft Flight Simulator and select its motion feed.");
-            toolTip.SetToolTip(forzaLaunchButton, "Open Forza Horizon 5 and select its motion feed.");
+            toolTip.SetToolTip(msfsLaunchButton, "Choose telemetry only, Steam launch, or Microsoft Store launch.");
+            toolTip.SetToolTip(forzaLaunchButton, "Choose telemetry only, Steam launch, or Microsoft Store launch.");
+            toolTip.SetToolTip(calLeftButton, "Five-second left directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
+            toolTip.SetToolTip(calRightButton, "Five-second right directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
+            toolTip.SetToolTip(stopCalButton, "Stop the directional test and disarm output.");
             toolTip.SetToolTip(safetyFooter, safetyFooter.Text);
 
             portCombo.TabIndex = 0;
@@ -479,19 +512,18 @@ namespace VestibularJoystickSim
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 25;
             timer.Tick += TimerTick;
-            timer.Start();
+            if (!offlineMode) timer.Start();
 
             visualTimer = new System.Windows.Forms.Timer();
             visualTimer.Interval = 16;
             visualTimer.Tick += VisualTimerTick;
-            visualTimer.Start();
+            if (!offlineMode) visualTimer.Start();
 
-            RefreshPorts();
-            TryAutoConnectVestibularDevice();
+            if (!offlineMode) { RefreshPorts(); TryAutoConnectVestibularDevice(); }
             UpdateUi();
             Shown += delegate
             {
-                if (Screen.FromControl(this).WorkingArea.Height <= 800)
+                if (!offlineMode && Screen.FromControl(this).WorkingArea.Height <= 800)
                 {
                     WindowState = FormWindowState.Maximized;
                 }
@@ -502,18 +534,9 @@ namespace VestibularJoystickSim
 
         public static bool SelfTest()
         {
-            return IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 128, 128, 128, 128 }) &&
-                   PacketValuesEqual(CurrentBytesToDacVolts(new int[] { 128, 128, 128, 128 }), new double[] { 0.0, 0.0, 0.0, 0.0 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 3, 3, 253, 253 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, GvsMaxRate, 0.0, MaxCurrentPeakMilliamp)), new int[] { 253, 3, 3, 253 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, GvsMaxRate, MaxCurrentPeakMilliamp)), new int[] { 3, 253, 3, 253 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(-GvsMaxRate, 0.0, 0.0, MaxCurrentPeakMilliamp)), new int[] { 253, 253, 3, 3 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, -GvsMaxRate, 0.0, MaxCurrentPeakMilliamp)), new int[] { 3, 253, 253, 3 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(0.0, 0.0, -GvsMaxRate, MaxCurrentPeakMilliamp)), new int[] { 253, 3, 253, 3 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, 0.0)), new int[] { 128, 128, 128, 128 }) &&
-                   IntValuesEqual(CurrentsToUartBytes(PqrToCodeMatrixCurrents(GvsMaxRate, 0.0, 0.0, 1.25)), new int[] { 65, 65, 190, 190 }) &&
-                   PacketValuesEqual(CurrentBytesToPacketValues(new int[] { 3, 3, 253, 253 }), new double[] { -125.0, -125.0, 125.0, 125.0 }) &&
-                   PacketValuesEqual(CurrentBytesToDacVolts(new int[] { 3, 3, 253, 253 }), new double[] { -18.75, -18.75, 18.75, 18.75 }) &&
+            return ClassicNrfProfile.SelfTest() &&
+                   CalibrationIntensity(0) == 0 && CalibrationIntensity(2.5) == 1 && CalibrationIntensity(5) == 0 &&
+                   PacketValuesEqual(JoystickToCommandedRates(0, 0, -1, 1), new double[] { -GvsMaxRate, 0, 0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.0, 1.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, 0.0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
@@ -528,12 +551,104 @@ namespace VestibularJoystickSim
                    MsfsSimConnectInput.SelfTest();
         }
 
+        private sealed class SmokeTransport : IOutputTransport
+        {
+            public bool IsOpen { get; private set; }
+            public void Open() { IsOpen = true; }
+            public void Write(byte[] packet) { if (!IsOpen) throw new InvalidOperationException("Mock port closed"); }
+            public void Close() { IsOpen = false; }
+            public void Dispose() { Close(); }
+        }
+
+        private static void SmokeRequire(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
+        }
+
+        private void SaveSmokeFrame(string directory, string name)
+        {
+            PerformLayout();
+            UpdateUi();
+            Refresh();
+            Application.DoEvents();
+            Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton };
+            foreach (Button control in controls)
+            {
+                Rectangle box = RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+                SmokeRequire(control.Visible && ClientRectangle.Contains(box), "Clipped control: " + control.Text);
+                SmokeRequire(control.Width >= 65 && control.Height >= 28, "Small control: " + control.Text);
+            }
+            using (Bitmap bitmap = new Bitmap(Width, Height))
+            {
+                DrawToBitmap(bitmap, new Rectangle(0, 0, Width, Height));
+                bitmap.Save(Path.Combine(directory, name + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+        public static int UiSmokeTest(string directory)
+        {
+            Directory.CreateDirectory(directory);
+            try
+            {
+                using (MainForm form = new MainForm(true))
+                {
+                    form.Show();
+                    form.ClientSize = new Size(1280, 800);
+                    form.SaveSmokeFrame(directory, "purple-1280x800");
+                    SmokeRequire(!form.armed && !form.calLeftButton.Enabled && !form.calRightButton.Enabled, "Calibration enabled while disarmed");
+                    form.ClientSize = new Size(1180, 650);
+                    form.SaveSmokeFrame(directory, "purple-1180x650");
+                    form.Size = form.MinimumSize;
+                    form.SaveSmokeFrame(directory, "purple-minimum");
+                    form.ClientSize = new Size(1280, 720);
+                    form.SaveSmokeFrame(directory, "purple-1280x720");
+                    form.serialOutput.Connect(new SmokeTransport());
+                    form.connectedPortName = "SIMULATED";
+                    form.serialOutput.Arm();
+                    form.UpdateUi();
+                    form.calLeftButton.PerformClick();
+                    Thread.Sleep(120);
+                    form.UpdateVestibularOutput();
+                    form.SendVestibularOutput();
+                    form.serialOutput.Pump();
+                    SmokeRequire(form.calibrationDirection == 1 && form.currentBytes[0] < 128 && form.currentBytes[2] > 128, "Left Cal did not produce left direction");
+                    form.SaveSmokeFrame(directory, "purple-left-cal-mock");
+                    form.stopCalButton.PerformClick();
+                    SmokeRequire(!form.armed && form.calibrationDirection == 0, "Stop Cal did not disarm");
+                    form.serialOutput.Arm();
+                    form.UpdateUi();
+                    form.calRightButton.PerformClick();
+                    Thread.Sleep(120);
+                    form.UpdateVestibularOutput();
+                    form.SendVestibularOutput();
+                    form.serialOutput.Pump();
+                    SmokeRequire(form.calibrationDirection == -1 && form.currentBytes[0] > 128 && form.currentBytes[2] < 128, "Right Cal did not produce right direction");
+                    form.SaveSmokeFrame(directory, "purple-right-cal-mock");
+                    form.PauseButtonClick(null, EventArgs.Empty);
+                    SmokeRequire(!form.armed && form.calibrationDirection == 0, "Pause did not stop calibration");
+                    form.SelectGame(GameKind.Forza);
+                    SmokeRequire(form.useForzaPhysics && !form.useMsfsPhysics && !form.armed, "Forza source selection");
+                    form.SelectGame(GameKind.Msfs);
+                    SmokeRequire(form.useMsfsPhysics && !form.useForzaPhysics && !form.armed, "MSFS source selection");
+                    form.Close();
+                }
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: device-free Windows layout at 1280x800, 1280x720, 1180x650 and minimum size; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(directory, "result.txt"), ex.ToString());
+                return 3;
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             closing = true;
             timer.Stop();
             visualTimer.Stop();
             SafeDisarmAndClose();
+            serialOutput.Dispose();
             msfsInput.Dispose();
             forzaInput.Dispose();
             base.OnFormClosing(e);
@@ -576,7 +691,7 @@ namespace VestibularJoystickSim
             catch (Exception ex)
             {
                 timer.Stop();
-                armed = false;
+                serialOutput.Disarm();
                 paused = true;
                 try
                 {
@@ -595,7 +710,7 @@ namespace VestibularJoystickSim
         private void TimerTickCore()
         {
             DateTime now = DateTime.UtcNow;
-            if ((serialPort == null || !serialPort.IsOpen) && (now - lastSerialScan).TotalSeconds >= 5.0)
+            if ((!serialOutput.Status.Connected) && (now - lastSerialScan).TotalSeconds >= 5.0)
             {
                 lastSerialScan = now;
                 TryAutoConnectVestibularDevice();
@@ -603,6 +718,7 @@ namespace VestibularJoystickSim
 
             double dt = Math.Min((now - lastTick).TotalSeconds, 0.05);
             lastTick = now;
+            UpdatePhysicalStickInput();
             UpdateMsfsInput();
             UpdateForzaInput();
 
@@ -633,7 +749,9 @@ namespace VestibularJoystickSim
             catch
             {
                 visualTimer.Stop();
-                SetStatus("Display paused - output safe");
+                serialOutput.InputFault("Controller/display polling failed");
+                StopCalibration();
+                SetStatus("Controller polling failed - disarmed");
             }
         }
 
@@ -661,11 +779,11 @@ namespace VestibularJoystickSim
             double activeY = paused ? 0.0 : ApplyDeadzone(inputY);
             double calibrationIntensity = GetCalibrationIntensity();
 
-            double[] commanded = BuildCommandedRates(activeX, activeY, calibrationIntensity);
+            double[] commanded = (!armed || paused) ? new double[3] : BuildCommandedRates(activeX, activeY, calibrationIntensity);
             commandedP = commanded[0];
             commandedQ = commanded[1];
             commandedR = commanded[2];
-            double[] headPqr = RotateRates(commandedP, commandedQ, commandedR, roll, pitch, yaw);
+            double[] headPqr = calibrationDirection != 0 ? commanded : RotateRates(commandedP, commandedQ, commandedR, roll, pitch, yaw);
 
             pRate += Clamp(headPqr[0] - pRate, -GvsMaxRamp, GvsMaxRamp);
             qRate += Clamp(headPqr[1] - qRate, -GvsMaxRamp, GvsMaxRamp);
@@ -686,108 +804,30 @@ namespace VestibularJoystickSim
 
         private void SendVestibularOutput()
         {
-            if (!armed || serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            try
-            {
-                DateTime now = DateTime.UtcNow;
-                if ((now - lastSerialSend).TotalSeconds < SerialSendIntervalSeconds)
-                {
-                    return;
-                }
-
-                WritePacket(PacketBuilder.UartSignal(new int[] { 10, currentBytes[0], currentBytes[1], currentBytes[2], currentBytes[3] }));
-                lastSerialSend = now;
-            }
-            catch (Exception ex)
-            {
-                armed = false;
-                SetStatus("Serial error - disarmed");
-                MessageBox.Show("Serial write failed: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            serialOutput.Publish(currentBytes);
         }
 
-        private void WritePacket(byte[] packet)
+        private void ResetCommandHistory()
         {
-            serialPort.Write(packet, 0, packet.Length);
-            packetCount++;
-            lastPacketText = PacketToPreview(packet);
+            StopCalibration();
+            pRate = qRate = rRate = commandedP = commandedQ = commandedR = 0.0;
+            for (int i = 0; i < 4; i++)
+            {
+                packetValues[i] = currentMilliampValues[i] = dacValues[i] = 0.0;
+                currentBytes[i] = 128;
+            }
         }
 
         private void SendNeutralOutput()
         {
-            SendNeutralOutput(true);
-        }
-
-        private void SendNeutralOutput(bool ignoreWriteErrors)
-        {
-            pRate = 0.0;
-            qRate = 0.0;
-            rRate = 0.0;
-            for (int i = 0; i < 4; i++)
-            {
-                packetValues[i] = 0.0;
-                currentBytes[i] = 128;
-                currentMilliampValues[i] = 0.0;
-                dacValues[i] = 0.0;
-            }
-            commandedP = 0.0;
-            commandedQ = 0.0;
-            commandedR = 0.0;
-
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            try
-            {
-                WritePacket(PacketBuilder.UartSignal(new int[] { 10, 128, 128, 128, 128 }));
-                lastSerialSend = DateTime.UtcNow;
-            }
-            catch (Exception)
-            {
-                if (!ignoreWriteErrors)
-                {
-                    throw;
-                }
-
-                lastPacketText = "Neutral TX failed";
-                SetStatus("Neutral TX failed");
-                // Closing should continue even if the device disappears.
-            }
-        }
-
-        private void SetHardwareMode(bool enabled, bool ignoreWriteErrors)
-        {
-            if (serialPort == null || !serialPort.IsOpen)
-            {
-                return;
-            }
-
-            try
-            {
-                WritePacket(PacketBuilder.UartSignal(new int[] { enabled ? 2 : 1 }));
-                lastSerialSend = DateTime.MinValue;
-            }
-            catch (Exception)
-            {
-                if (!ignoreWriteErrors)
-                {
-                    throw;
-                }
-
-                lastPacketText = "Mode TX failed";
-                SetStatus("Mode TX failed");
-            }
+            ResetCommandHistory();
+            try { serialOutput.Neutral(); }
+            catch (Exception ex) { SetStatus("Neutral failed - disarmed: " + ex.Message); }
         }
 
         private void ConnectButtonClick(object sender, EventArgs e)
         {
-            if (serialPort != null && serialPort.IsOpen)
+            if (serialOutput.Status.Connected)
             {
                 SafeDisarmAndClose();
                 return;
@@ -798,57 +838,32 @@ namespace VestibularJoystickSim
 
         private bool TryConnectSelectedPort(bool interactive)
         {
-            if (portCombo.SelectedItem == null)
-            {
-                SetStatus("No VMocion serial device found");
-                if (interactive)
-                {
-                    MessageBox.Show("No COM port is available. Connect the VMocion USB serial device, then choose Refresh.",
-                        Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                return false;
-            }
-
+            if (offlineMode || portCombo.SelectedItem == null) return false;
             try
             {
-                serialPort = new SerialPort(portCombo.SelectedItem.ToString(), SerialBaud);
-                serialPort.DataBits = 8;
-                serialPort.Parity = Parity.None;
-                serialPort.StopBits = StopBits.One;
-                serialPort.Handshake = Handshake.None;
-                serialPort.DtrEnable = false;
-                serialPort.RtsEnable = false;
-                serialPort.WriteBufferSize = 4096;
-                serialPort.WriteTimeout = 1000;
-                serialPort.ReadTimeout = 250;
-                serialPort.Open();
-                packetCount = 0;
-                lastSerialSend = DateTime.MinValue;
-                connectButton.Text = "Disconnect";
-                portCombo.Enabled = false;
-                armButton.Enabled = true;
-                SetStatus("Connected");
+                SerialPort port = new SerialPort(portCombo.SelectedItem.ToString(), SerialBaud);
+                port.DataBits = 8;
+                port.Parity = Parity.None;
+                port.StopBits = StopBits.One;
+                port.Handshake = Handshake.None;
+                port.DtrEnable = true;
+                port.RtsEnable = false;
+                port.WriteBufferSize = 4096;
+                port.WriteTimeout = 100;
+                port.ReadTimeout = 250;
+                serialOutput.Connect(new SerialOutputTransport(port));
+                connectedPortName = portCombo.SelectedItem.ToString();
+                connectionAge.Restart();
+                ResetCommandHistory();
+                SetStatus("NRF serial open - wait 3 seconds, then Arm; no firmware ACK");
                 UpdateUi();
                 return true;
             }
             catch (Exception ex)
             {
-                if (serialPort != null)
-                {
-                    try
-                    {
-                        serialPort.Dispose();
-                    }
-                    catch
-                    {
-                    }
-                }
-                serialPort = null;
-                SetStatus(interactive ? "Connect failed" : "Auto-connect waiting");
-                if (interactive)
-                {
-                    MessageBox.Show("Could not open serial port: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
+                serialOutput.Disconnect();
+                SetStatus("Connect failed: " + ex.Message);
+                if (interactive) MessageBox.Show("Could not open serial port: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 UpdateUi();
                 return false;
             }
@@ -959,42 +974,19 @@ namespace VestibularJoystickSim
 
         private void ArmButtonClick(object sender, EventArgs e)
         {
-            if (serialPort == null || !serialPort.IsOpen)
+            if (!serialOutput.Status.Connected) return;
+            if (!armed && connectionAge.ElapsedMilliseconds < 3000)
             {
+                SetStatus("Wait 3 seconds after connection before Arm");
                 return;
             }
-
-            if (armed)
+            try
             {
-                try
-                {
-                    armed = false;
-                    SendNeutralOutput(false);
-                    SetHardwareMode(false, false);
-                    SetStatus("Connected");
-                }
-                catch (Exception ex)
-                {
-                    SetStatus("Disarm error");
-                    MessageBox.Show("Could not disarm output: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
+                ResetCommandHistory();
+                if (armed) { serialOutput.Disarm(); SetStatus("Disarmed"); }
+                else { serialOutput.Arm(); SetStatus("Arm sent - firmware does not acknowledge"); }
             }
-            else
-            {
-                try
-                {
-                    SetHardwareMode(true, false);
-                    SendNeutralOutput(false);
-
-                    armed = true;
-                    SetStatus("Output armed - legacy gvs.py");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Could not arm output: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-            }
-
+            catch (Exception ex) { SetStatus("Serial error - disarmed: " + ex.Message); }
             UpdateUi();
         }
 
@@ -1004,14 +996,15 @@ namespace VestibularJoystickSim
             if (paused)
             {
                 StopCalibration();
-                SendNeutralOutput();
-                SetStatus("Paused - neutral");
+                ResetCommandHistory();
+                serialOutput.Disarm();
+                SetStatus("Paused - disarmed");
             }
             else if (armed)
             {
                 SetStatus("Output armed - legacy gvs.py");
             }
-            else if (serialPort != null && serialPort.IsOpen)
+            else if (serialOutput.Status.Connected)
             {
                 SetStatus("Connected");
             }
@@ -1046,44 +1039,48 @@ namespace VestibularJoystickSim
 
         private void StartCalibration(int direction)
         {
+            if (!armed || paused) { SetStatus("Connect and Arm before calibration"); return; }
+            if (calibrationDirection == (direction < 0 ? -1 : 1)) { CancelCalibration(); return; }
+            SendNeutralOutput();
             calibrationDirection = direction < 0 ? -1 : 1;
-            calibrationStep = 0;
-            calibrationStart = DateTime.UtcNow;
-            SetStatus(direction > 0 ? "Cal left" : "Cal right");
+            calibrationClock.Restart();
+            SetStatus(direction > 0 ? "Left Cal - five-second directional test" : "Right Cal - five-second directional test");
+            UpdateUi();
         }
 
         private void StopCalibration()
         {
             calibrationDirection = 0;
-            calibrationStep = 0;
+            calibrationClock.Reset();
+        }
+
+        private void CancelCalibration()
+        {
+            ResetCommandHistory();
+            serialOutput.Disarm();
+            SetStatus("Calibration stopped - disarmed");
+            UpdateUi();
+        }
+
+        private static double CalibrationIntensity(double seconds)
+        {
+            if (seconds < 0 || seconds >= 5.0) return 0.0;
+            return seconds <= 2.5 ? seconds / 2.5 : (5.0 - seconds) / 2.5;
         }
 
         private double GetCalibrationIntensity()
         {
-            if (calibrationDirection == 0)
-            {
-                return 0.0;
-            }
-
-            double elapsed = (DateTime.UtcNow - calibrationStart).TotalSeconds;
-            int step = calibrationStep++;
-            if (step < 34)
-            {
-                return step * 0.03;
-            }
-
-            if (step < 68)
-            {
-                return 1.0 - ((step - 34) * 0.03);
-            }
-
+            if (calibrationDirection == 0) return 0.0;
+            if (!armed || paused) { StopCalibration(); return 0.0; }
+            double elapsed = calibrationClock.Elapsed.TotalSeconds;
             if (elapsed >= 5.0)
             {
-                StopCalibration();
-                SetStatus(armed ? "Output armed - legacy gvs.py" : "Ready");
+                ResetCommandHistory();
+                serialOutput.Disarm();
+                SetStatus("Calibration complete - disarmed");
+                return 0.0;
             }
-
-            return 0.0;
+            return CalibrationIntensity(elapsed);
         }
 
         private void RefreshPorts()
@@ -1102,7 +1099,7 @@ namespace VestibularJoystickSim
 
         private void TryAutoConnectVestibularDevice()
         {
-            if (closing || (serialPort != null && serialPort.IsOpen))
+            if (offlineMode || closing || serialOutput.Status.Connected)
             {
                 return;
             }
@@ -1125,8 +1122,7 @@ namespace VestibularJoystickSim
                     Array.Sort(ports, ComparePortNames);
                     vestibularPort = FindPortByHardwareText(ports, new string[]
                     {
-                        "A403QKIL", "VMOCION", "DIGITUS", "VID_0403&PID_6001",
-                        "FTEMPZK0", "USB SERIAL PORT", "USB SERIAL CONVERTER", "FTDI"
+                        "VID_2886&PID_8045", "VID_2886&PID_0145", "XIAO NRF52840"
                     });
                 }
                 catch
@@ -1200,12 +1196,12 @@ namespace VestibularJoystickSim
                 portCombo.SelectedItem = preferred;
             }
 
-            if (serialPort == null || !serialPort.IsOpen)
+            if (!serialOutput.Status.Connected)
             {
                 SetStatus(ports.Length == 0 ? "Connect VMocion USB" : "VMocion ready to connect");
             }
 
-            if (attemptAutoConnect && vestibularPort != null && (serialPort == null || !serialPort.IsOpen))
+            if (attemptAutoConnect && vestibularPort != null && (!serialOutput.Status.Connected))
             {
                 TryConnectSelectedPort(false);
             }
@@ -1213,26 +1209,10 @@ namespace VestibularJoystickSim
 
         private void SafeDisarmAndClose()
         {
-            armed = false;
-            SendNeutralOutput();
-            SetHardwareMode(false, true);
-
-            if (serialPort != null)
-            {
-                try
-                {
-                    serialPort.Close();
-                }
-                catch
-                {
-                }
-                serialPort.Dispose();
-                serialPort = null;
-            }
-
-            connectButton.Text = "Connect";
-            armButton.Enabled = false;
-            portCombo.Enabled = true;
+            serialOutput.Disconnect();
+            ResetCommandHistory();
+            connectedPortName = null;
+            connectionAge.Reset();
             SetStatus("Ready");
             UpdateUi();
         }
@@ -1244,6 +1224,16 @@ namespace VestibularJoystickSim
 
         private void UpdateUi(bool forceText)
         {
+            OutputStatus output = serialOutput.Status;
+            if (!output.Armed && calibrationDirection != 0) ResetCommandHistory();
+            connectButton.Text = output.Connected ? "Disconnect" : "Connect";
+            portCombo.Enabled = !output.Connected;
+            armButton.Enabled = output.Connected && (output.Armed || connectionAge.ElapsedMilliseconds >= 3000);
+            calLeftButton.Enabled = calRightButton.Enabled = output.Armed && !paused;
+            stopCalButton.Enabled = calibrationDirection != 0;
+            calLeftButton.BackColor = calibrationDirection > 0 ? Theme.Warning : Theme.PurpleDim;
+            calRightButton.BackColor = calibrationDirection < 0 ? Theme.Warning : Theme.PurpleDim;
+            if (output.Error != null) SetStatus(output.Error);
             MotionSnapshot activeGameMotion = GetFreshGameMotion();
             double displayYaw;
             double displayPitch;
@@ -1330,11 +1320,11 @@ namespace VestibularJoystickSim
 
             controllerBadge.SetStatus(physicalInputConnected ? "XINPUT " + (physicalInputIndex + 1).ToString() : "SEARCHING",
                 physicalInputConnected ? BadgeState.Ready : BadgeState.Neutral);
-            bool deviceConnected = serialPort != null && serialPort.IsOpen;
+            bool deviceConnected = serialOutput.Status.Connected;
             string selectedPort = portCombo.SelectedItem as string;
-            deviceBadge.SetStatus(deviceConnected ? serialPort.PortName : (string.IsNullOrEmpty(selectedPort) ? "SCANNING" : "AUTO " + selectedPort),
+            deviceBadge.SetStatus(deviceConnected ? connectedPortName : (string.IsNullOrEmpty(selectedPort) ? "SCANNING" : "AUTO " + selectedPort),
                 deviceConnected ? BadgeState.Ready : BadgeState.Neutral);
-            outputBadge.SetStatus(armed ? "LIVE" : (paused ? "PAUSED" : "SAFE"),
+            outputBadge.SetStatus(armed ? "ARM SENT" : (paused ? "PAUSED" : "SAFE"),
                 armed ? BadgeState.Danger : (paused ? BadgeState.Warning : BadgeState.Neutral));
 
             UpdateGameButton(msfsLaunchButton, "FLIGHT SIM", UseMsfsPhysics(), msfsFresh);
@@ -1350,43 +1340,55 @@ namespace VestibularJoystickSim
             }
         }
 
-        private void LaunchGame(GameKind game)
+        private void SelectGame(GameKind game)
         {
-            string appId;
-            string displayName;
-            if (game == GameKind.Msfs)
-            {
-                appId = "Microsoft.FlightSimulator_8wekyb3d8bbwe!App";
-                displayName = "Flight Simulator";
-                useForzaPhysics = false;
-                useMsfsPhysics = true;
-            }
-            else
-            {
-                appId = "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5";
-                displayName = "Forza Horizon 5";
-                useMsfsPhysics = false;
-                useForzaPhysics = true;
-            }
-
+            serialOutput.Disarm();
+            ResetCommandHistory();
+            useMsfsPhysics = game == GameKind.Msfs;
+            useForzaPhysics = game == GameKind.Forza;
             msfsInput.ResetStatus();
             forzaInput.ResetStatus();
-            SendNeutralOutput();
+            msfsMotion = MotionSnapshot.Empty("MSFS waiting");
+            forzaMotion = MotionSnapshot.Empty("Forza waiting");
+            SetStatus("Game selected - waiting for telemetry; press Arm when ready");
+            UpdateUi();
+        }
 
+        private void LaunchGame(GameKind game)
+        {
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Items.Add("Use telemetry from running game", null, delegate { SelectGame(game); });
+            if (game == GameKind.Forza)
+                menu.Items.Add("Launch Forza Horizon 5 - Steam", null, delegate { OpenGame(game, "steam://rungameid/1551360"); });
+            else
+            {
+                menu.Items.Add("Launch Flight Simulator 2020 - Steam", null, delegate { OpenGame(game, "steam://rungameid/1250410"); });
+                menu.Items.Add("Launch Flight Simulator 2024 - Steam", null, delegate { OpenGame(game, "steam://rungameid/2537590"); });
+            }
+            menu.Items.Add("Launch Microsoft Store edition", null, delegate {
+                string appId = game == GameKind.Forza ? "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5" : "Microsoft.FlightSimulator_8wekyb3d8bbwe!App";
+                OpenGame(game, "shell:AppsFolder\\" + appId);
+            });
+            menu.Closed += delegate { menu.Dispose(); };
+            Button anchor = game == GameKind.Forza ? forzaLaunchButton : msfsLaunchButton;
+            menu.Show(anchor, new Point(0, anchor.Height));
+        }
+
+        private void OpenGame(GameKind game, string target)
+        {
+            SelectGame(game);
             try
             {
-                ProcessStartInfo startInfo = new ProcessStartInfo("explorer.exe", "shell:AppsFolder\\" + appId);
-                startInfo.UseShellExecute = true;
-                Process.Start(startInfo);
-                SetStatus("Opening " + displayName);
+                if (target.StartsWith("shell:", StringComparison.Ordinal))
+                    Process.Start(new ProcessStartInfo("explorer.exe", target) { UseShellExecute = true });
+                else Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+                SetStatus("Launch requested - waiting for game telemetry");
             }
             catch (Exception ex)
             {
-                SetStatus(displayName + " is not available");
-                MessageBox.Show("Could not open " + displayName + ".\r\n\r\n" + ex.Message,
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                SetStatus("Launch unavailable - start game manually; telemetry remains selected");
+                MessageBox.Show("Start the game manually, then return to VFORCE.\r\n\r\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-
             UpdateUi();
         }
 
@@ -1399,7 +1401,7 @@ namespace VestibularJoystickSim
 
         private static void UpdateGameButton(Button button, string name, bool selected, bool live)
         {
-            button.Text = name + "\r\n" + (live ? "LIVE" : (selected ? "STARTING" : "OPEN"));
+            button.Text = name + "\r\n" + (live ? "LIVE" : (selected ? "WAITING" : "SELECT"));
             button.BackColor = live ? Theme.Purple : (selected ? Theme.PurpleDim : Theme.SurfaceDeep);
             button.FlatAppearance.BorderColor = live ? Theme.Success : (selected ? Theme.PurpleBright : Theme.PurpleDim);
         }
@@ -1490,10 +1492,10 @@ namespace VestibularJoystickSim
                 "Game physics: " + (gameMotion.IsFresh ? gameMotion.Source + " live" : "waiting") + "\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
-                "VMocion: " + ((serialPort != null && serialPort.IsOpen) ? serialPort.PortName + " connected" : "not connected") + "\r\n" +
+                "VMocion: " + ((serialOutput.Status.Connected) ? connectedPortName + " serial open (no firmware ACK)" : "not connected") + "\r\n" +
                 "Available ports: " + (ports.Length == 0 ? "none" : string.Join(", ", ports)) + "\r\n" +
-                "Output: " + (armed ? "ARMED / LIVE" : "DISARMED / SAFE") + "\r\n" +
-                "Peak limit: " + FormatCurrentPeakLabel(currentPeakMilliamp) + "\r\n" +
+                "Output: " + (armed ? "ARM REQUESTED / UNACKNOWLEDGED" : "DISARMED / SAFE") + "\r\n" +
+                "Nominal command limit (not measured): " + FormatCurrentPeakLabel(currentPeakMilliamp) + "\r\n" +
                 "Packets sent: " + packetCount.ToString() + "\r\n" +
                 "Last TX: " + lastPacketText;
 
@@ -1556,13 +1558,13 @@ namespace VestibularJoystickSim
                 }
             };
 
-            Button manualConnect = MakeButton(serialPort != null && serialPort.IsOpen ? "Disconnect" : "Connect");
+            Button manualConnect = MakeButton(serialOutput.Status.Connected ? "Disconnect" : "Connect");
             manualConnect.Width = 96;
             manualConnect.Click += delegate
             {
                 string requestedPort = portPicker.SelectedItem as string;
                 dialog.Close();
-                if (serialPort != null && serialPort.IsOpen)
+                if (serialOutput.Status.Connected)
                 {
                     SafeDisarmAndClose();
                 }
@@ -1871,22 +1873,7 @@ namespace VestibularJoystickSim
 
         private static double[] PqrToCodeMatrixCurrents(double p, double q, double r, double currentPeakMilliamp)
         {
-            double safeCurrentPeakMilliamp = Clamp(currentPeakMilliamp, 0.0, MaxCurrentPeakMilliamp);
-            double weightedPitch = 1.5 * q;
-            double[] raw = new double[]
-            {
-                -p + weightedPitch - r,
-                -p - weightedPitch + r,
-                p - weightedPitch - r,
-                p + weightedPitch + r
-            };
-
-            double[] currents = new double[4];
-            for (int i = 0; i < 4; i++)
-            {
-                currents[i] = Clamp(raw[i] * safeCurrentPeakMilliamp / GvsMaxRate, -safeCurrentPeakMilliamp, safeCurrentPeakMilliamp);
-            }
-            return currents;
+            return ClassicNrfProfile.Mix(p, q, r, GvsMaxRate, currentPeakMilliamp);
         }
 
         private static double[] CurrentBytesToPacketValues(int[] bytes)
@@ -1911,17 +1898,7 @@ namespace VestibularJoystickSim
 
         private static int[] CurrentsToUartBytes(double[] currents)
         {
-            int[] bytes = new int[currents.Length];
-            for (int i = 0; i < currents.Length; i++)
-            {
-                bytes[i] = CurrentToUartByte(currents[i]);
-            }
-            return bytes;
-        }
-
-        private static int CurrentToUartByte(double current)
-        {
-            return (int)Clamp(Math.Truncate((current + 2.56) / 0.02), 0, 255);
+            return ClassicNrfProfile.Encode(currents);
         }
 
         private static string PacketToPreview(byte[] packet)
@@ -2040,523 +2017,6 @@ namespace VestibularJoystickSim
             if (value > max) return max;
             return value;
         }
-    }
-
-    internal struct MotionSnapshot
-    {
-        private static readonly TimeSpan FreshWindow = TimeSpan.FromMilliseconds(900);
-
-        public bool Connected;
-        public DateTime TimestampUtc;
-        public string Source;
-        public double P;
-        public double Q;
-        public double R;
-        public double RollDeg;
-        public double PitchDeg;
-        public double YawDeg;
-
-        public bool IsFresh
-        {
-            get { return Connected && (DateTime.UtcNow - TimestampUtc) <= FreshWindow; }
-        }
-
-        public static MotionSnapshot Fresh(string source, double p, double q, double r, double rollDeg, double pitchDeg, double yawDeg)
-        {
-            MotionSnapshot snapshot = new MotionSnapshot();
-            snapshot.Connected = true;
-            snapshot.TimestampUtc = DateTime.UtcNow;
-            snapshot.Source = source;
-            snapshot.P = Sanitize(p);
-            snapshot.Q = Sanitize(q);
-            snapshot.R = Sanitize(r);
-            snapshot.RollDeg = Sanitize(rollDeg);
-            snapshot.PitchDeg = Sanitize(pitchDeg);
-            snapshot.YawDeg = Sanitize(yawDeg);
-            return snapshot;
-        }
-
-        public static MotionSnapshot Empty(string source)
-        {
-            MotionSnapshot snapshot = new MotionSnapshot();
-            snapshot.Connected = false;
-            snapshot.TimestampUtc = DateTime.MinValue;
-            snapshot.Source = source;
-            return snapshot;
-        }
-
-        private static double Sanitize(double value)
-        {
-            if (double.IsNaN(value) || double.IsInfinity(value))
-            {
-                return 0.0;
-            }
-
-            return value;
-        }
-    }
-
-    internal sealed class ForzaUdpTelemetryInput : IDisposable
-    {
-        private const int PrimaryPort = 5300;
-        private const int SecondaryPort = 5607;
-        private const int MinimumSledPacketBytes = 232;
-        private const int MaxPacketsPerPoll = 32;
-        private readonly List<UdpClient> clients = new List<UdpClient>();
-        private MotionSnapshot latest = MotionSnapshot.Empty("Forza waiting on localhost UDP 5300/5607");
-        private bool started;
-        private string status = "Forza waiting on localhost UDP 5300/5607";
-
-        public MotionSnapshot Poll()
-        {
-            EnsureStarted();
-
-            for (int i = 0; i < clients.Count; i++)
-            {
-                UdpClient client = clients[i];
-                int packetBudget = MaxPacketsPerPoll;
-                IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
-                while (packetBudget-- > 0)
-                {
-                    byte[] data;
-                    try
-                    {
-                        if (client.Available <= 0)
-                        {
-                            break;
-                        }
-
-                        data = client.Receive(ref remote);
-                    }
-                    catch (SocketException)
-                    {
-                        status = "Forza UDP receive error";
-                        break;
-                    }
-
-                    if (!IPAddress.IsLoopback(remote.Address))
-                    {
-                        continue;
-                    }
-
-                    MotionSnapshot parsed;
-                    if (TryParse(data, out parsed))
-                    {
-                        latest = parsed;
-                        status = parsed.Source;
-                    }
-                    else if (string.Equals(parsed.Source, "Forza race not active", StringComparison.Ordinal))
-                    {
-                        // A valid Forza packet explicitly says the race stopped. Clear
-                        // live motion immediately instead of waiting for freshness expiry.
-                        latest = parsed;
-                        status = parsed.Source;
-                    }
-                }
-            }
-
-            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
-        }
-
-        public static bool SelfTest()
-        {
-            byte[] packet = new byte[MinimumSledPacketBytes];
-            WriteInt32(packet, 0, 1);
-            WriteSingle(packet, 44, 0.2f);
-            WriteSingle(packet, 48, 0.3f);
-            WriteSingle(packet, 52, 0.1f);
-            WriteSingle(packet, 56, 0.4f);
-            WriteSingle(packet, 60, -0.2f);
-            WriteSingle(packet, 64, 0.1f);
-
-            MotionSnapshot motion;
-            if (!TryParse(packet, out motion) ||
-                Math.Abs(motion.P - 0.1) >= 0.0001 ||
-                Math.Abs(motion.Q - 0.2) >= 0.0001 ||
-                Math.Abs(motion.R - 0.3) >= 0.0001 ||
-                Math.Abs(motion.RollDeg - (0.1 * 180.0 / Math.PI)) >= 0.0001 ||
-                Math.Abs(motion.PitchDeg - (-0.2 * 180.0 / Math.PI)) >= 0.0001)
-            {
-                return false;
-            }
-
-            WriteInt32(packet, 0, 0);
-            MotionSnapshot stopped;
-            return !TryParse(packet, out stopped) && stopped.Source == "Forza race not active";
-        }
-
-        public void ResetStatus()
-        {
-            status = started ? "Forza waiting on localhost UDP 5300/5607" : "Forza UDP not started";
-            latest = MotionSnapshot.Empty(status);
-        }
-
-        private void EnsureStarted()
-        {
-            if (started)
-            {
-                return;
-            }
-
-            started = true;
-            TryBind(PrimaryPort);
-            TryBind(SecondaryPort);
-
-            if (clients.Count == 0)
-            {
-                status = "Forza UDP bind failed";
-            }
-        }
-
-        private void TryBind(int port)
-        {
-            try
-            {
-                UdpClient client = new UdpClient();
-                client.ExclusiveAddressUse = false;
-                client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                client.Client.Bind(new IPEndPoint(IPAddress.Loopback, port));
-                clients.Add(client);
-                status = "Forza waiting on localhost UDP " + port.ToString();
-            }
-            catch
-            {
-                // Another telemetry app may own the port; keep any port that did bind.
-            }
-        }
-
-        private static bool TryParse(byte[] data, out MotionSnapshot motion)
-        {
-            motion = MotionSnapshot.Empty("Forza invalid packet");
-            if (data == null || data.Length < MinimumSledPacketBytes)
-            {
-                return false;
-            }
-
-            int isRaceOn = ReadInt32(data, 0);
-            if (isRaceOn == 0)
-            {
-                motion = MotionSnapshot.Empty("Forza race not active");
-                return false;
-            }
-
-            if (isRaceOn != 1)
-            {
-                return false;
-            }
-
-            float angularX = ReadSingle(data, 44);
-            float angularY = ReadSingle(data, 48);
-            float angularZ = ReadSingle(data, 52);
-            float yaw = ReadSingle(data, 56);
-            float pitch = ReadSingle(data, 60);
-            float roll = ReadSingle(data, 64);
-
-            if (!IsFiniteAndSane(angularX) || !IsFiniteAndSane(angularY) || !IsFiniteAndSane(angularZ) ||
-                !IsFiniteAndSane(yaw) || !IsFiniteAndSane(pitch) || !IsFiniteAndSane(roll))
-            {
-                return false;
-            }
-
-            motion = MotionSnapshot.Fresh(
-                "Forza UDP physics",
-                angularZ,
-                angularX,
-                angularY,
-                roll * 180.0 / Math.PI,
-                pitch * 180.0 / Math.PI,
-                yaw * 180.0 / Math.PI);
-            return true;
-        }
-
-        private static bool IsFiniteAndSane(float value)
-        {
-            return !float.IsNaN(value) && !float.IsInfinity(value) && Math.Abs(value) <= 100.0f;
-        }
-
-        private static int ReadInt32(byte[] data, int offset)
-        {
-            return BitConverter.ToInt32(data, offset);
-        }
-
-        private static float ReadSingle(byte[] data, int offset)
-        {
-            if (offset + 4 > data.Length)
-            {
-                return 0.0f;
-            }
-
-            return BitConverter.ToSingle(data, offset);
-        }
-
-        private static void WriteSingle(byte[] data, int offset, float value)
-        {
-            byte[] bytes = BitConverter.GetBytes(value);
-            Array.Copy(bytes, 0, data, offset, bytes.Length);
-        }
-
-        private static void WriteInt32(byte[] data, int offset, int value)
-        {
-            byte[] bytes = BitConverter.GetBytes(value);
-            Array.Copy(bytes, 0, data, offset, bytes.Length);
-        }
-
-        public void Dispose()
-        {
-            for (int i = 0; i < clients.Count; i++)
-            {
-                clients[i].Close();
-            }
-
-            clients.Clear();
-        }
-    }
-
-    internal sealed class MsfsSimConnectInput : IDisposable
-    {
-        private const uint SimConnectObjectIdUser = 0;
-        private const uint SimConnectUnused = 0xffffffff;
-        private const uint DefinitionMotion = 1;
-        private const uint RequestMotion = 1;
-        private const uint SimConnectDatatypeFloat64 = 4;
-        private const uint SimConnectPeriodSimFrame = 3;
-        private const uint SimConnectDataRequestFlagDefault = 0;
-        private const uint SimConnectRecvIdQuit = 3;
-        private const uint SimConnectRecvIdSimobjectData = 8;
-        private const int SimobjectDataOffset = 40;
-
-        private readonly int windowMessage;
-        private readonly DispatchProc dispatchProc;
-        private IntPtr handle = IntPtr.Zero;
-        private DateTime lastConnectAttempt = DateTime.MinValue;
-        private MotionSnapshot latest = MotionSnapshot.Empty("MSFS waiting for SimConnect");
-        private string status = "MSFS waiting for SimConnect";
-        private bool definitionsRegistered;
-        private bool disconnectRequested;
-
-        public MsfsSimConnectInput(int msfsWindowMessage)
-        {
-            windowMessage = msfsWindowMessage;
-            dispatchProc = Dispatch;
-        }
-
-        public static bool SelfTest()
-        {
-            MotionSnapshot motion = MapBodyRates(0.1, 0.2, 0.3);
-            return Math.Abs(motion.P - 0.3) < 0.0001 &&
-                   Math.Abs(motion.Q - 0.1) < 0.0001 &&
-                   Math.Abs(motion.R - 0.2) < 0.0001;
-        }
-
-        public MotionSnapshot Poll(IntPtr windowHandle)
-        {
-            EnsureConnected(windowHandle);
-            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
-        }
-
-        public void HandleWindowMessage(int message)
-        {
-            if (message != windowMessage || handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            DispatchPending();
-        }
-
-        public void ResetStatus()
-        {
-            status = handle == IntPtr.Zero ? "MSFS waiting for SimConnect" : "MSFS SimConnect connected";
-            latest = MotionSnapshot.Empty(status);
-        }
-
-        private void DispatchPending()
-        {
-            if (handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            try
-            {
-                int hr = SimConnect_CallDispatch(handle, dispatchProc, IntPtr.Zero);
-                if (disconnectRequested)
-                {
-                    MarkDisconnected("MSFS waiting for simulator");
-                }
-                else if (hr < 0)
-                {
-                    MarkDisconnected("MSFS SimConnect disconnected");
-                }
-            }
-            catch
-            {
-                MarkDisconnected("MSFS SimConnect disconnected");
-            }
-        }
-
-        private void MarkDisconnected(string disconnectedStatus)
-        {
-            Close();
-            status = disconnectedStatus;
-            latest = MotionSnapshot.Empty(status);
-        }
-
-        private void EnsureConnected(IntPtr windowHandle)
-        {
-            if (handle != IntPtr.Zero || windowHandle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            if ((DateTime.UtcNow - lastConnectAttempt).TotalSeconds < 2.0)
-            {
-                return;
-            }
-
-            lastConnectAttempt = DateTime.UtcNow;
-            IntPtr simConnect;
-            try
-            {
-                int hr = SimConnect_Open(out simConnect, "Vestibular Joystick Simulation", windowHandle, (uint)windowMessage, IntPtr.Zero, 0);
-                if (hr != 0 || simConnect == IntPtr.Zero)
-                {
-                    status = "MSFS waiting for simulator";
-                    return;
-                }
-
-                handle = simConnect;
-                disconnectRequested = false;
-                RegisterDefinitions();
-                status = "MSFS SimConnect connected";
-            }
-            catch (DllNotFoundException)
-            {
-                MarkDisconnected("MSFS SimConnect.dll missing");
-            }
-            catch
-            {
-                MarkDisconnected("MSFS SimConnect failed");
-            }
-        }
-
-        private void RegisterDefinitions()
-        {
-            if (definitionsRegistered || handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            AddDouble("ROTATION VELOCITY BODY X", "radians per second");
-            AddDouble("ROTATION VELOCITY BODY Y", "radians per second");
-            AddDouble("ROTATION VELOCITY BODY Z", "radians per second");
-
-            int hr = SimConnect_RequestDataOnSimObject(
-                handle,
-                RequestMotion,
-                DefinitionMotion,
-                SimConnectObjectIdUser,
-                SimConnectPeriodSimFrame,
-                SimConnectDataRequestFlagDefault,
-                0,
-                0,
-                0);
-            if (hr != 0)
-            {
-                throw new InvalidOperationException("SimConnect request failed.");
-            }
-
-            definitionsRegistered = true;
-        }
-
-        private void AddDouble(string name, string units)
-        {
-            int hr = SimConnect_AddToDataDefinition(handle, DefinitionMotion, name, units, SimConnectDatatypeFloat64, 0.0f, SimConnectUnused);
-            if (hr != 0)
-            {
-                throw new InvalidOperationException("SimConnect definition failed: " + name);
-            }
-        }
-
-        private void Dispatch(IntPtr data, uint cbData, IntPtr context)
-        {
-            if (data == IntPtr.Zero || cbData < 12)
-            {
-                return;
-            }
-
-            uint receiveId = (uint)Marshal.ReadInt32(data, 8);
-            if (receiveId == SimConnectRecvIdQuit)
-            {
-                // Close after SimConnect_CallDispatch returns; closing from inside its
-                // callback risks re-entering the native library.
-                disconnectRequested = true;
-                return;
-            }
-
-            if (receiveId != SimConnectRecvIdSimobjectData || cbData < SimobjectDataOffset + 24)
-            {
-                return;
-            }
-
-            double bodyX = ReadDouble(data, SimobjectDataOffset);
-            double bodyY = ReadDouble(data, SimobjectDataOffset + 8);
-            double bodyZ = ReadDouble(data, SimobjectDataOffset + 16);
-            latest = MapBodyRates(bodyX, bodyY, bodyZ);
-            status = latest.Source;
-        }
-
-        private static MotionSnapshot MapBodyRates(double bodyX, double bodyY, double bodyZ)
-        {
-            // Flight Simulator body axes: X=lateral/pitch, Y=vertical/yaw,
-            // Z=longitudinal/roll. Convert them to the P/Q/R convention.
-            return MotionSnapshot.Fresh("MSFS SimConnect physics", bodyZ, bodyX, bodyY, 0.0, 0.0, 0.0);
-        }
-
-        private static double ReadDouble(IntPtr pointer, int offset)
-        {
-            return BitConverter.Int64BitsToDouble(Marshal.ReadInt64(pointer, offset));
-        }
-
-        private void Close()
-        {
-            if (handle != IntPtr.Zero)
-            {
-                try
-                {
-                    SimConnect_Close(handle);
-                }
-                catch
-                {
-                }
-            }
-
-            handle = IntPtr.Zero;
-            definitionsRegistered = false;
-            disconnectRequested = false;
-        }
-
-        public void Dispose()
-        {
-            Close();
-        }
-
-        private delegate void DispatchProc(IntPtr data, uint cbData, IntPtr context);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
-        private static extern int SimConnect_Open(out IntPtr phSimConnect, string name, IntPtr hWnd, uint userEventWin32, IntPtr hEventHandle, uint configIndex);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_Close(IntPtr hSimConnect);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
-        private static extern int SimConnect_AddToDataDefinition(IntPtr hSimConnect, uint defineId, string datumName, string unitsName, uint datumType, float epsilon, uint datumId);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_RequestDataOnSimObject(IntPtr hSimConnect, uint requestId, uint defineId, uint objectId, uint period, uint flags, uint origin, uint interval, uint limit);
-
-        [DllImport("SimConnect.dll", CallingConvention = CallingConvention.StdCall)]
-        private static extern int SimConnect_CallDispatch(IntPtr hSimConnect, DispatchProc dispatchProc, IntPtr context);
     }
 
     internal sealed class PhysicalJoystickInput

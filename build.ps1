@@ -3,6 +3,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $source = Join-Path $root 'src\VestibularJoystickSim\App.cs'
+$senderSource = Join-Path $root 'src\VestibularJoystickSim\SerialOutput.cs'
+$senderTests = Join-Path $root 'src\VestibularJoystickSim\SerialOutputTests.cs'
+$profileSource = Join-Path $root 'src\VestibularJoystickSim\ClassicNrfProfile.cs'
+$telemetrySource = Join-Path $root 'src\VestibularJoystickSim\GameTelemetry.cs'
 $icon = Join-Path $root 'src\VestibularJoystickSim\VMocion.ico'
 $manifest = Join-Path $root 'src\VestibularJoystickSim\app.manifest'
 $vforceLogo = Join-Path $root 'assets\vforce-logo.png'
@@ -44,17 +48,20 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
     /reference:System.Management.dll `
-    $source
+    $source $senderSource $senderTests $profileSource $telemetrySource
 
 if ($LASTEXITCODE -ne 0) {
     throw "C# compilation failed with exit code $LASTEXITCODE."
 }
 
-if (Test-Path -LiteralPath $simConnectSource) {
-    Copy-Item -LiteralPath $simConnectSource -Destination $simConnectOutput -Force
+if (-not (Test-Path -LiteralPath $simConnectSource)) {
+    throw "SimConnect.dll is required for the Flight Simulator package."
 }
+Copy-Item -LiteralPath $simConnectSource -Destination $simConnectOutput -Force
 
 $selfTest = Start-Process -FilePath $output -ArgumentList '--self-test' -Wait -PassThru -WindowStyle Hidden
 if ($selfTest.ExitCode -ne 0) {
     throw "VestibularJoystickSim self-test failed with exit code $($selfTest.ExitCode)."
 }
+
+Write-Host "PASS Windows x64 build, packet/telemetry/calibration tests, and deterministic serial sender tests."

@@ -47,5 +47,5 @@ jobs:
             "outputs\VestibularJoystickSim-windows.zip" `
             "outputs\vestibular-joystick-sim\VestibularJoystickSim.exe" `
             --title "Vestibular Joystick Sim $tag" `
-            --notes "Windows build with Peak mA control from 0.00 to 2.50 mA. Download the ZIP for the executable plus SimConnect.dll." `
+            --notes "Windows purple GUI with Left Cal and Right Cal, Forza and Flight Simulator inputs, and the existing NRF Classic v0.8.1 protocol. Firmware is unchanged. Download the ZIP for the executable plus SimConnect.dll." `
             --latest
