@@ -25,6 +25,38 @@ Classic protocol does not acknowledge output or report measured current, so
 the GUI cannot verify that the board is armed or that analog output occurred.
 Advanced diagnostics show the selected port and transmitted command state.
 
+## ASUS ROG Ally left-stick setup and on-device check
+
+In the Ally's Command Center, set **Control Mode** explicitly to **Gamepad**
+and enable **Embedded Controller**. Avoid Desktop mode or automatic switching
+between Gamepad and Desktop modes as focus changes. This GUI reads the left
+stick; moving the right stick is not the left-stick verification.
+
+Use **Controller** in the left-stick card to choose **Auto (active)** or a
+specific **XInput 1–4** slot. Auto selects an active controller; selecting a
+specific slot helps when an external or virtual controller is also connected.
+Changing the controller selection disarms output and requires an explicit Arm.
+
+Before connecting or arming physical output on Tyler's Ally:
+
+1. Open the updated GUI and leave it disarmed. Check that the controller
+   indication identifies the embedded left-stick input.
+2. Move the left stick left, right, up and down, then through the diagonals.
+   Check that the on-screen stick follows the correct direction and returns
+   to center when released. Change the Controller selection if another device
+   is being shown.
+3. With Forza or Flight Simulator running, repeat the preview check with the
+   GUI focused and then with the game focused. Confirm the intended input
+   remains available when the GUI runs in the background.
+4. After confirming the intended input and focus behavior, continue with the
+   normal device workflow. Changing Controller selection requires an explicit
+   Arm afterward.
+
+Windows CI checks native controller API binding and synthetic raw-axis cases.
+Those checks do not verify the embedded controller, mode configuration, driver
+behavior, foreground/background delivery, or physical stick movement on an
+ASUS ROG Ally. Tyler's on-device check is still required for those results.
+
 ## Left Cal and Right Cal
 
 The two buttons run finite, opposite-direction check ramps using the selected
@@ -107,7 +139,8 @@ probe is sent during the Classic session.
 `SHA256SUMS.txt` records hashes for the packaged files. `BUILD-INFO.txt`
 records the exact source commit and Windows workflow run. The Windows build
 runs packet, motion-transform, telemetry parser, calibration and deterministic
-serial sender tests, including the Forza UDP loopback check. UI smoke checks
+serial sender tests, controller API binding and synthetic left-stick cases,
+including the Forza UDP loopback check. UI smoke checks
 render the handheld layout without opening a serial device.
 
 These checks establish source/build behavior and simulated transport behavior.

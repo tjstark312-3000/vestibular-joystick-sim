@@ -28,6 +28,7 @@
     <Compile Include="SerialOutputTests.cs" />
     <Compile Include="ClassicNrfProfile.cs" />
     <Compile Include="GameTelemetry.cs" />
+    <Compile Include="JoystickInput.cs" />
     <None Include="app.manifest" />
     <None Include="VMocion.ico" />
   </ItemGroup>

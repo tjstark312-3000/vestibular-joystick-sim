@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyFileVersion("1.2.1.0")]
 
 namespace VestibularJoystickSim
 {
@@ -58,8 +58,8 @@ namespace VestibularJoystickSim
         }
         private static int RunSelfTests(string reportPath)
         {
-            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Forza UDP loopback" };
-            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest };
+            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback" };
+            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest };
             List<string> report = new List<string>();
             bool passed = true;
             for (int i = 0; i < tests.Length; i++)
@@ -126,6 +126,7 @@ namespace VestibularJoystickSim
         private readonly Button calLeftButton, calRightButton, stopCalButton;
         private readonly bool offlineMode;
         private Control smokeSurface;
+        private readonly Button controllerButton;
         private readonly Button refreshButton;
         private readonly Button msfsLaunchButton;
         private readonly Button forzaLaunchButton;
@@ -460,11 +461,23 @@ namespace VestibularJoystickSim
             leftPanel.Margin = new Padding(0, 0, 8, 0);
             workspace.Controls.Add(leftPanel, 0, 0);
 
+            Panel stickHeader = new Panel();
+            stickHeader.Dock = DockStyle.Top;
+            stickHeader.Height = 36;
+            stickHeader.BackColor = Color.Transparent;
             Label leftTitle = MakeSectionTitle("LEFT STICK");
-            leftTitle.Dock = DockStyle.Top;
-            leftPanel.Controls.Add(leftTitle);
+            leftTitle.Dock = DockStyle.Fill;
+            controllerButton = MakeButton("Controller: Auto");
+            controllerButton.Dock = DockStyle.Right;
+            controllerButton.Width = 124;
+            controllerButton.AccessibleName = "Controller selection";
+            controllerButton.Click += ShowControllerMenu;
+            toolTip.SetToolTip(controllerButton, "ROG Ally: select Gamepad Mode and enable Embedded Controller. Move the left stick, or select its XInput slot. Changing this selection disarms output.");
+            stickHeader.Controls.Add(leftTitle);
+            stickHeader.Controls.Add(controllerButton);
+            leftPanel.Controls.Add(stickHeader);
 
-            inputLabel = MakeMetric("Input", "Waiting for XInput left stick");
+            inputLabel = MakeMetric("Input", "ROG Ally: Gamepad Mode / Embedded Controller on");
             inputLabel.Dock = DockStyle.Bottom;
             inputLabel.Height = 44;
             inputLabel.Padding = new Padding(10, 12, 10, 6);
@@ -610,7 +623,7 @@ namespace VestibularJoystickSim
             surface.Refresh();
             Application.DoEvents();
             File.AppendAllText(Path.Combine(directory, "layout.txt"), name + ": rendered_client=" + surface.ClientSize + " bitmap=" + surface.Size + " runner_screen=" + Screen.PrimaryScreen.Bounds + "\r\n");
-            Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton };
+            Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton, controllerButton };
             foreach (Button control in controls)
             {
                 Rectangle box = surface.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
@@ -681,6 +694,10 @@ namespace VestibularJoystickSim
                     SmokeRequire(form.useForzaPhysics && !form.useMsfsPhysics && !form.armed, "Forza source selection");
                     form.SelectGame(GameKind.Msfs);
                     SmokeRequire(form.useMsfsPhysics && !form.useForzaPhysics && !form.armed, "MSFS source selection");
+                    form.SelectController(2);
+                    SmokeRequire(form.physicalInput.SelectedXInputIndex == 2 && !form.armed && form.calibrationDirection == 0, "Explicit controller selection did not disarm");
+                    form.SelectController(-1);
+                    SmokeRequire(form.physicalInput.SelectedXInputIndex == -1, "Auto controller selection");
                     form.SafeDisarmAndClose();
                     form.serialOutput.Dispose();
                     form.msfsInput.Dispose();
@@ -923,6 +940,31 @@ namespace VestibularJoystickSim
                 UpdateUi();
                 return false;
             }
+        }
+
+        private void SelectController(int index)
+        {
+            serialOutput.Disarm();
+            ResetCommandHistory();
+            physicalInput.SelectedXInputIndex = index;
+            physicalInputConnected = false;
+            physicalInputIndex = -1;
+            inputX = inputY = 0.0;
+            SetStatus("Controller selected - move the left stick while disarmed");
+            UpdateUi();
+        }
+
+        private void ShowControllerMenu(object sender, EventArgs e)
+        {
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Items.Add("Auto - use active left stick", null, delegate { SelectController(-1); });
+            for (int i = 0; i < 4; i++)
+            {
+                int index = i;
+                menu.Items.Add("XInput " + (i + 1).ToString(), null, delegate { SelectController(index); });
+            }
+            menu.Closed += delegate { menu.Dispose(); };
+            menu.Show(controllerButton, new Point(0, controllerButton.Height));
         }
 
         private void UpdatePhysicalStickInput()
@@ -1281,6 +1323,7 @@ namespace VestibularJoystickSim
         private void UpdateUi(bool forceText)
         {
             OutputStatus output = serialOutput.Status;
+            controllerButton.Text = physicalInput.SelectedXInputIndex < 0 ? "Controller: Auto" : "Controller: " + (physicalInput.SelectedXInputIndex + 1).ToString();
             if (!output.Armed && calibrationDirection != 0) ResetCommandHistory();
             connectButton.Text = output.Connected ? "Disconnect" : "Connect";
             portCombo.Enabled = !output.Connected;
@@ -2069,330 +2112,6 @@ namespace VestibularJoystickSim
         }
     }
 
-    internal sealed class PhysicalJoystickInput
-    {
-        private const int ErrorSuccess = 0;
-        private const int JoyNoError = 0;
-        private const int JoyReturnAll = 0x000000ff;
-        // The Ally sample on this system rests at essentially zero. An 8% radial
-        // deadzone filters normal wear while avoiding the stock XInput 24% delay.
-        private const double LeftThumbDeadzone = 0.08;
-        private bool xinput14Unavailable;
-        private bool xinput910Unavailable;
-        private int preferredXInputIndex = -1;
-
-        public bool TryReadLeftStick(out double x, out double y, out int controllerIndex, out string source)
-        {
-            x = 0.0;
-            y = 0.0;
-            controllerIndex = -1;
-            source = "No left stick";
-
-            if (preferredXInputIndex >= 0)
-            {
-                XInputState preferredState;
-                if (TryGetState(preferredXInputIndex, out preferredState))
-                {
-                    NormalizeLeftStick(preferredState.Gamepad.ThumbLX, preferredState.Gamepad.ThumbLY, out x, out y);
-                    controllerIndex = preferredXInputIndex;
-                    source = "XInput " + (preferredXInputIndex + 1).ToString();
-                    return true;
-                }
-                preferredXInputIndex = -1;
-            }
-
-            bool found = false;
-            double bestMagnitude = -1.0;
-
-            for (int i = 0; i < 4; i++)
-            {
-                XInputState state;
-                if (!TryGetState(i, out state))
-                {
-                    continue;
-                }
-
-                double candidateX;
-                double candidateY;
-                NormalizeLeftStick(state.Gamepad.ThumbLX, state.Gamepad.ThumbLY, out candidateX, out candidateY);
-                double magnitude = Magnitude(candidateX, candidateY);
-                if (!found || magnitude > bestMagnitude)
-                {
-                    found = true;
-                    bestMagnitude = magnitude;
-                    x = candidateX;
-                    y = candidateY;
-                    controllerIndex = i;
-                    source = "XInput " + (i + 1).ToString();
-                }
-            }
-
-            // XInput is the authoritative path for integrated handheld controls such as
-            // the ASUS ROG Ally. Do not let the same controller's legacy WinMM mirror,
-            // keyboard state, or pointer movement replace its left-stick signal.
-            if (found)
-            {
-                preferredXInputIndex = controllerIndex;
-                return true;
-            }
-
-            uint count = JoyGetNumDevsSafe();
-            for (uint i = 0; i < count && i < 16; i++)
-            {
-                double candidateX;
-                double candidateY;
-                string candidateSource;
-                if (!TryReadWinMmJoystick(i, out candidateX, out candidateY, out candidateSource))
-                {
-                    continue;
-                }
-
-                double magnitude = Magnitude(candidateX, candidateY);
-                if (!found || magnitude > bestMagnitude || (bestMagnitude <= 0.001 && candidateSource.IndexOf("Windows joystick", StringComparison.OrdinalIgnoreCase) >= 0))
-                {
-                    found = true;
-                    bestMagnitude = magnitude;
-                    x = candidateX;
-                    y = candidateY;
-                    controllerIndex = (int)i;
-                    source = candidateSource;
-                }
-            }
-
-            return found;
-        }
-
-        private bool TryGetState(int controllerIndex, out XInputState state)
-        {
-            state = new XInputState();
-
-            if (!xinput14Unavailable)
-            {
-                try
-                {
-                    return XInputGetState14(controllerIndex, out state) == ErrorSuccess;
-                }
-                catch (DllNotFoundException)
-                {
-                    xinput14Unavailable = true;
-                }
-                catch (EntryPointNotFoundException)
-                {
-                    xinput14Unavailable = true;
-                }
-            }
-
-            if (!xinput910Unavailable)
-            {
-                try
-                {
-                    return XInputGetState910(controllerIndex, out state) == ErrorSuccess;
-                }
-                catch (DllNotFoundException)
-                {
-                    xinput910Unavailable = true;
-                }
-                catch (EntryPointNotFoundException)
-                {
-                    xinput910Unavailable = true;
-                }
-            }
-
-            return false;
-        }
-
-        private static void NormalizeLeftStick(short rawX, short rawY, out double x, out double y)
-        {
-            double nx = NormalizeAxis(rawX);
-            double ny = NormalizeAxis(rawY);
-            double magnitude = Math.Sqrt(nx * nx + ny * ny);
-
-            if (magnitude <= LeftThumbDeadzone)
-            {
-                x = 0.0;
-                y = 0.0;
-                return;
-            }
-
-            double scaled = Math.Min(1.0, (magnitude - LeftThumbDeadzone) / (1.0 - LeftThumbDeadzone));
-            x = nx / magnitude * scaled;
-            y = ny / magnitude * scaled;
-        }
-
-        private static double NormalizeAxis(short value)
-        {
-            return value >= 0 ? value / 32767.0 : value / 32768.0;
-        }
-
-        private bool TryReadWinMmJoystick(uint joystickIndex, out double x, out double y, out string source)
-        {
-            x = 0.0;
-            y = 0.0;
-            source = "No left stick";
-
-            try
-            {
-                JoyCaps caps;
-                uint capResult = joyGetDevCaps(joystickIndex, out caps, (uint)Marshal.SizeOf(typeof(JoyCaps)));
-                if (capResult != JoyNoError || caps.NumAxes < 2)
-                {
-                    return false;
-                }
-
-                JoyInfoEx info = new JoyInfoEx();
-                info.Size = (uint)Marshal.SizeOf(typeof(JoyInfoEx));
-                info.Flags = JoyReturnAll;
-                uint posResult = joyGetPosEx(joystickIndex, ref info);
-                if (posResult != JoyNoError)
-                {
-                    return false;
-                }
-
-                x = NormalizeWinMmAxis(info.X, caps.XMin, caps.XMax, false);
-                y = NormalizeWinMmAxis(info.Y, caps.YMin, caps.YMax, true);
-                source = "Windows joystick " + (joystickIndex + 1).ToString();
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static uint JoyGetNumDevsSafe()
-        {
-            try
-            {
-                return joyGetNumDevs();
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        private static double NormalizeWinMmAxis(uint value, uint min, uint max, bool invert)
-        {
-            if (max <= min)
-            {
-                min = 0;
-                max = 65535;
-            }
-
-            double center = (min + max) / 2.0;
-            double halfRange = (max - min) / 2.0;
-            if (halfRange <= 0.0)
-            {
-                return 0.0;
-            }
-
-            double normalized = ((double)value - center) / halfRange;
-            if (invert)
-            {
-                normalized = -normalized;
-            }
-
-            return Clamp(normalized, -1.0, 1.0);
-        }
-
-        private static double Magnitude(double x, double y)
-        {
-            return Math.Sqrt(x * x + y * y);
-        }
-
-        private static double Clamp(double value, double min, double max)
-        {
-            if (value < min) return min;
-            if (value > max) return max;
-            return value;
-        }
-
-        [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
-        private static extern int XInputGetState14(int dwUserIndex, out XInputState pState);
-
-        [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState")]
-        private static extern int XInputGetState910(int dwUserIndex, out XInputState pState);
-
-        [DllImport("winmm.dll")]
-        private static extern uint joyGetNumDevs();
-
-        [DllImport("winmm.dll", CharSet = CharSet.Auto)]
-        private static extern uint joyGetDevCaps(uint uJoyID, out JoyCaps pjc, uint cbjc);
-
-        [DllImport("winmm.dll")]
-        private static extern uint joyGetPosEx(uint uJoyID, ref JoyInfoEx pji);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct XInputState
-        {
-            public uint PacketNumber;
-            public XInputGamepad Gamepad;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct XInputGamepad
-        {
-            public ushort Buttons;
-            public byte LeftTrigger;
-            public byte RightTrigger;
-            public short ThumbLX;
-            public short ThumbLY;
-            public short ThumbRX;
-            public short ThumbRY;
-        }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct JoyCaps
-        {
-            public ushort Mid;
-            public ushort Pid;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-            public string ProductName;
-            public uint XMin;
-            public uint XMax;
-            public uint YMin;
-            public uint YMax;
-            public uint ZMin;
-            public uint ZMax;
-            public uint NumButtons;
-            public uint PeriodMin;
-            public uint PeriodMax;
-            public uint RMin;
-            public uint RMax;
-            public uint UMin;
-            public uint UMax;
-            public uint VMin;
-            public uint VMax;
-            public uint Caps;
-            public uint MaxAxes;
-            public uint NumAxes;
-            public uint MaxButtons;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-            public string RegKey;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string OemVxD;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct JoyInfoEx
-        {
-            public uint Size;
-            public uint Flags;
-            public uint X;
-            public uint Y;
-            public uint Z;
-            public uint R;
-            public uint U;
-            public uint V;
-            public uint Buttons;
-            public uint ButtonNumber;
-            public uint Pov;
-            public uint Reserved1;
-            public uint Reserved2;
-        }
-
-    }
-
     internal sealed class PhysicalStickView : Control
     {
         public double VectorX;
@@ -2422,7 +2141,7 @@ namespace VestibularJoystickSim
             using (Font regular = new Font("Segoe UI", 8.2f))
             {
                 e.Graphics.FillEllipse(state, 18, 20, 8, 8);
-                e.Graphics.DrawString(Connected ? "ROG ALLY CONNECTED" : "CONTROLLER NOT FOUND", title, text, 34, 14);
+                e.Graphics.DrawString(Connected ? "CONTROLLER CONNECTED" : "CONTROLLER NOT FOUND", title, text, 34, 14);
                 e.Graphics.DrawString("Real-time left stick", regular, muted, 19, 43);
             }
 

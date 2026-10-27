@@ -7,6 +7,7 @@ $senderSource = Join-Path $root 'src\VestibularJoystickSim\SerialOutput.cs'
 $senderTests = Join-Path $root 'src\VestibularJoystickSim\SerialOutputTests.cs'
 $profileSource = Join-Path $root 'src\VestibularJoystickSim\ClassicNrfProfile.cs'
 $telemetrySource = Join-Path $root 'src\VestibularJoystickSim\GameTelemetry.cs'
+$joystickSource = Join-Path $root 'src\VestibularJoystickSim\JoystickInput.cs'
 $icon = Join-Path $root 'src\VestibularJoystickSim\VMocion.ico'
 $manifest = Join-Path $root 'src\VestibularJoystickSim\app.manifest'
 $vforceLogo = Join-Path $root 'assets\vforce-logo.png'
@@ -48,7 +49,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
     /reference:System.Management.dll `
-    $source $senderSource $senderTests $profileSource $telemetrySource
+    $source $senderSource $senderTests $profileSource $telemetrySource $joystickSource
 
 if ($LASTEXITCODE -ne 0) {
     throw "C# compilation failed with exit code $LASTEXITCODE."
@@ -66,4 +67,4 @@ if ($selfTest.ExitCode -ne 0) {
     throw "VestibularJoystickSim self-test failed with exit code $($selfTest.ExitCode)."
 }
 
-Write-Host "PASS Windows x64 build, packet/telemetry/calibration tests, and deterministic serial sender tests."
+Write-Host "PASS Windows x64 build, packet/telemetry/calibration/controller tests, and deterministic serial sender tests."
