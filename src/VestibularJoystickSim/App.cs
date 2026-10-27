@@ -30,7 +30,7 @@ namespace VestibularJoystickSim
         {
             if (args.Length > 0 && string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
-                return PacketBuilder.SelfTest() && MainForm.SelfTest() && ClassicNrfProfile.SelfTest() && SerialOutputTests.Run() && ForzaUdpTelemetryInput.LoopbackSelfTest() ? 0 : 2;
+                return RunSelfTests(args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "vforce-self-test-results.txt"));
             }
 
             if (args.Length > 1 && args[0] == "--ui-smoke-test")
@@ -55,6 +55,26 @@ namespace VestibularJoystickSim
                 GC.KeepAlive(instanceMutex);
             }
             return 0;
+        }
+        private static int RunSelfTests(string reportPath)
+        {
+            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Forza UDP loopback" };
+            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest };
+            List<string> report = new List<string>();
+            bool passed = true;
+            for (int i = 0; i < tests.Length; i++)
+            {
+                try
+                {
+                    bool result = tests[i]();
+                    report.Add((result ? "PASS " : "FAIL ") + names[i]);
+                    passed &= result;
+                }
+                catch (Exception ex) { passed = false; report.Add("FAIL " + names[i] + ": " + ex); }
+            }
+            report.Add("Scope: host/model tests only; no physical NRF, running game, or measured analog output.");
+            File.WriteAllLines(reportPath, report.ToArray());
+            return passed ? 0 : 2;
         }
     }
 

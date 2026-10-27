@@ -59,7 +59,9 @@ if (-not (Test-Path -LiteralPath $simConnectSource)) {
 }
 Copy-Item -LiteralPath $simConnectSource -Destination $simConnectOutput -Force
 
-$selfTest = Start-Process -FilePath $output -ArgumentList '--self-test' -Wait -PassThru -WindowStyle Hidden
+$testReport = Join-Path $outputDirectory 'self-test-results.txt'
+$selfTest = Start-Process -FilePath $output -ArgumentList '--self-test', $testReport -Wait -PassThru -WindowStyle Hidden
+if (Test-Path -LiteralPath $testReport) { Get-Content -LiteralPath $testReport }
 if ($selfTest.ExitCode -ne 0) {
     throw "VestibularJoystickSim self-test failed with exit code $($selfTest.ExitCode)."
 }

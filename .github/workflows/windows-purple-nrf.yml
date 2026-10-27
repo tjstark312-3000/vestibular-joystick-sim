@@ -37,6 +37,7 @@ jobs:
           Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
           Copy-Item 'outputs\vestibular-joystick-sim\SimConnect.dll' $package
           Copy-Item README.md (Join-Path $package 'READ-ME-FIRST.md')
+          Copy-Item 'outputs\vestibular-joystick-sim\self-test-results.txt' $package
           "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false" |
             Set-Content -Encoding utf8 (Join-Path $package 'BUILD-INFO.txt')
           Get-ChildItem -LiteralPath $package -File | Sort-Object Name | ForEach-Object {

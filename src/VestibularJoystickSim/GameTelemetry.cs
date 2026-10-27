@@ -355,38 +355,64 @@ namespace VestibularJoystickSim
             {
                 input.Poll();
                 if (input.clients.Count != 2) return false;
-                IPEndPoint target = (IPEndPoint)input.clients[0].Client.LocalEndPoint;
                 byte[] packet = new byte[MinimumSledPacketBytes];
                 WriteInt32(packet, 0, 1);
                 WriteSingle(packet, 52, 0.25f);
-                sender.Send(packet, packet.Length, target);
-                MotionSnapshot sample = MotionSnapshot.Empty("test");
-                long deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
-                while (!sample.IsFresh && Stopwatch.GetTimestamp() < deadline)
-                {
-                    Thread.Sleep(1);
-                    sample = input.Poll();
-                }
-                if (!sample.IsFresh || Math.Abs(sample.P - 0.25) > 0.0001) return false;
+                if (!WaitForLoopbackPacket(input, sender, packet, true)) return false;
                 WriteInt32(packet, 0, 0);
-                sender.Send(packet, packet.Length, target);
-                deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
-                while (sample.IsFresh && Stopwatch.GetTimestamp() < deadline)
-                {
-                    Thread.Sleep(1);
-                    sample = input.Poll();
-                }
-                if (sample.IsFresh || sample.Source != "Forza race not active") return false;
+                if (!WaitForLoopbackPacket(input, sender, packet, false)) return false;
                 WriteInt32(packet, 0, 1);
-                sender.Send(packet, packet.Length, target);
+                if (!QueueLoopbackPacket(input, sender, packet)) return false;
                 input.ResetStatus();
-                if (input.Poll().IsFresh) return false; // Old queued data was discarded.
+                if (input.Poll().IsFresh || input.clients.Count != 2) return false;
+                // A valid datagram was observed in the old socket's queue before
+                // reset, so this assertion verifies queue disposal, not delivery luck.
                 // A stalled poll must also discard buffered motion.
-                target = (IPEndPoint)input.clients[0].Client.LocalEndPoint;
-                sender.Send(packet, packet.Length, target);
+                if (!QueueLoopbackPacket(input, sender, packet)) return false;
                 input.lastPollTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
-                return !input.Poll().IsFresh;
+                if (input.Poll().IsFresh || input.clients.Count != 2) return false;
+                // Rebinding after the safety discard must still accept new traffic.
+                return WaitForLoopbackPacket(input, sender, packet, true);
             }
+        }
+
+        private static bool WaitForLoopbackPacket(ForzaUdpTelemetryInput input, UdpClient sender,
+            byte[] packet, bool expectActive)
+        {
+            long deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 3;
+            while (Stopwatch.GetTimestamp() < deadline)
+            {
+                // Poll may replace ephemeral sockets after a CI scheduling pause.
+                // Resolve the endpoint each attempt, and send again after a reset.
+                input.Poll();
+                if (input.clients.Count != 2) return false;
+                IPEndPoint target = (IPEndPoint)input.clients[0].Client.LocalEndPoint;
+                sender.Send(packet, packet.Length, target);
+                Thread.Sleep(1);
+                MotionSnapshot sample = input.Poll();
+                if (expectActive)
+                {
+                    if (sample.IsFresh && sample.Source == "Forza UDP physics" &&
+                        Math.Abs(sample.P - 0.25) <= 0.0001) return true;
+                }
+                else if (!sample.IsFresh && sample.Source == "Forza race not active")
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool QueueLoopbackPacket(ForzaUdpTelemetryInput input, UdpClient sender, byte[] packet)
+        {
+            if (input.clients.Count != 2) return false;
+            UdpClient receiver = input.clients[0];
+            IPEndPoint target = (IPEndPoint)receiver.Client.LocalEndPoint;
+            sender.Send(packet, packet.Length, target);
+            long deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            while (receiver.Available == 0 && Stopwatch.GetTimestamp() < deadline)
+                Thread.Sleep(1);
+            return receiver.Available > 0;
         }
     }
 
