@@ -89,7 +89,8 @@ identity `classic_r8_1_distribution`, for XIAO nRF52840 Sense. Its protocol is:
 - Four-channel payload `0A A B C D`; neutral is `128` on every channel.
 - Every channel is constrained to **28–228**, matching the firmware's
   accepted Classic command range.
-- Explicit arm sends neutral, Reset (`01`), Direct/Arm (`02`), then exact
+- Explicit arm sends neutral and Reset (`01`), waits for host transmission
+  and a 100 ms reset-processing interval, then Direct/Arm (`02`) and exact
   neutral. The app sends commands every 25 ms from a separate serial worker.
 - Input snapshots expire after 100 ms. A known sender gap of 250 ms stops
   the host session; the firmware retains its independent command watchdog.

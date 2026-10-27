@@ -25,6 +25,18 @@ namespace VestibularJoystickSim
         }
         private sealed class Transport : IOutputTransport
         {
+            private readonly Clock clock;
+            public Transport(Clock clock) { this.clock = clock; }
+            public int ResetBoundaryCount;
+            public int PacketsAtResetBoundary;
+            public bool FailBoundary;
+            public void SettleAfterReset()
+            {
+                ++ResetBoundaryCount;
+                PacketsAtResetBoundary = Packets.Count;
+                if (FailBoundary) throw new TimeoutException("injected reset boundary failure");
+                clock.Set(clock.Milliseconds + 100);
+            }
             public bool IsOpen { get; private set; }
             public readonly List<byte[]> Packets = new List<byte[]>();
             public Action<byte[]> BeforeWrite;
@@ -63,6 +75,7 @@ namespace VestibularJoystickSim
         public static bool Run()
         {
             GoldenAndFreshness();
+            ResetBoundaryFailure();
             UiStall();
             SenderGap();
             WallClockIndependence();
@@ -71,27 +84,29 @@ namespace VestibularJoystickSim
             DisarmRace();
             PublishWaitDoesNotRenewFreshness();
             RearmClearsUiHistory();
-            Console.WriteLine("PASS serial sender: freshness, UI stall, sender gap, monotonic time, write/input failure, disarm race, queued snapshot age, rearm UI history");
+            Console.WriteLine("PASS serial sender: reset boundary, freshness, UI stall, sender gap, monotonic time, write/input failure, disarm race, queued snapshot age, rearm UI history");
             return true;
         }
 
         private static void GoldenAndFreshness()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm();
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds;
+                Require(origin == 100 && t.ResetBoundaryCount == 1 && t.PacketsAtResetBoundary == 2,
+                    "reset settles before Direct/neutral without consuming handshake time");
                 Require(t.Packets.Count == 4 && IsNeutral(t.Packets[0]) && t.Packets[1][2] == 1 &&
                     t.Packets[2][2] == 2 && IsNeutral(t.Packets[3]), "neutral/reset/direct/neutral arm order");
                 Require(BitConverter.ToString(SerialOutput.Frame(new int[] { 10, 28, 28, 228, 228 })) ==
                     "AA-05-0A-1C-1C-E4-E4-0A-55", "legacy golden packet");
                 sender.Publish(Motion);
-                c.Set(25); sender.Pump();
+                c.Set(origin + 25); sender.Pump();
                 Require(IsMotion(t.Packets[t.Packets.Count - 1]), "fresh command at 25 ms");
-                c.Set(75); sender.Pump();
-                c.Set(99); sender.Pump();
+                c.Set(origin + 75); sender.Pump();
+                c.Set(origin + 99); sender.Pump();
                 Require(sender.Status.Armed, "snapshot valid before 100 ms");
-                c.Set(100); sender.Pump();
+                c.Set(origin + 100); sender.Pump();
                 Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Input updates stopped") >= 0,
                     "snapshot expires exactly at 100 ms");
                 OffTail(t); NoResume(sender, t, c);
@@ -100,16 +115,33 @@ namespace VestibularJoystickSim
             }
         }
 
-        private static void UiStall()
+        private static void ResetBoundaryFailure()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm();
+                sender.Connect(t);
+                t.FailBoundary = true;
+                bool failed = false;
+                try { sender.Arm(); }
+                catch (TimeoutException) { failed = true; }
+                Require(failed && !sender.Status.Armed, "failed reset boundary cannot arm");
+                foreach (byte[] packet in t.Packets)
+                    Require(packet[2] != 2 && !IsMotion(packet), "failed boundary sends no Direct or motion");
+                OffTail(t);
+            }
+        }
+
+        private static void UiStall()
+        {
+            Clock c = new Clock(); Transport t = new Transport(c);
+            using (SerialOutput sender = new SerialOutput(c, false))
+            {
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds;
                 for (int now = 25; now <= 500; now += 25)
-                { c.Set(now); sender.Publish(Motion); sender.Pump(); Require(sender.Status.Armed, "healthy stream"); }
+                { c.Set(origin + now); sender.Publish(Motion); sender.Pump(); Require(sender.Status.Armed, "healthy stream"); }
                 // UI is frozen for 350 ms; background sender continues running.
-                for (int now = 525; now <= 850; now += 25) { c.Set(now); sender.Pump(); }
+                for (int now = 525; now <= 850; now += 25) { c.Set(origin + now); sender.Pump(); }
                 Require(!sender.Status.Armed, "UI stall must end output without waiting for firmware timeout");
                 for (int i = 0; i < t.Packets.Count; i++)
                     if (i >= 4 + 23) Require(!IsMotion(t.Packets[i]), "no expired cached motion during UI stall");
@@ -119,12 +151,12 @@ namespace VestibularJoystickSim
 
         private static void SenderGap()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion);
-                c.Set(25); sender.Pump();
-                c.Set(275); sender.Publish(Motion); // Fresh UI cannot repair the known 250 ms TX gap.
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion);
+                c.Set(origin + 25); sender.Pump();
+                c.Set(origin + 275); sender.Publish(Motion); // Fresh UI cannot repair the known 250 ms TX gap.
                 sender.Pump();
                 Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Sender gap") >= 0, "250 ms sender gap");
                 OffTail(t); NoResume(sender, t, c);
@@ -133,14 +165,14 @@ namespace VestibularJoystickSim
 
         private static void WallClockIndependence()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm();
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds;
                 for (int i = 1; i <= 20; i++)
                 {
                     c.WallTime = (i % 2 == 0) ? DateTime.MinValue : DateTime.MaxValue;
-                    c.Set(i * 25); sender.Publish(Motion); sender.Pump();
+                    c.Set(origin + i * 25); sender.Publish(Motion); sender.Pump();
                     Require(sender.Status.Armed && IsMotion(t.Packets[t.Packets.Count - 1]), "wall-clock corrections cannot suppress sends");
                 }
                 Require(t.Packets.Count == 24, "exact monotonic 25 ms send cadence");
@@ -149,11 +181,11 @@ namespace VestibularJoystickSim
 
         private static void WriteFailure()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion);
-                t.FailNext = true; c.Set(25); sender.Pump();
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion);
+                t.FailNext = true; c.Set(origin + 25); sender.Pump();
                 Require(!sender.Status.Armed && sender.Status.Error.IndexOf("injected write failure") >= 0, "write failure disarms");
                 OffTail(t); NoResume(sender, t, c);
             }
@@ -161,10 +193,10 @@ namespace VestibularJoystickSim
 
         private static void InputFailure()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion); c.Set(25); sender.Pump();
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion); c.Set(origin + 25); sender.Pump();
                 sender.InputFault("injected input failure");
                 Require(!sender.Status.Armed, "input exception disarms"); OffTail(t); NoResume(sender, t, c);
             }
@@ -172,13 +204,13 @@ namespace VestibularJoystickSim
 
         private static void DisarmRace()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             using (ManualResetEvent entered = new ManualResetEvent(false))
             using (ManualResetEvent release = new ManualResetEvent(false))
             using (ManualResetEvent requested = new ManualResetEvent(false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion); c.Set(25);
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion); c.Set(origin + 25);
                 t.BeforeWrite = delegate(byte[] p)
                 {
                     if (IsMotion(p)) { entered.Set(); Require(release.WaitOne(2000), "release blocked write"); }
@@ -197,13 +229,13 @@ namespace VestibularJoystickSim
 
         private static void PublishWaitDoesNotRenewFreshness()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             using (SerialOutput sender = new SerialOutput(c, false))
             using (ManualResetEvent entered = new ManualResetEvent(false))
             using (ManualResetEvent release = new ManualResetEvent(false))
             using (ManualResetEvent captured = new ManualResetEvent(false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion); c.Set(25);
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion); c.Set(origin + 25);
                 t.BeforeWrite = delegate(byte[] p)
                 { if (IsMotion(p)) { entered.Set(); Require(release.WaitOne(3000), "release slow write"); } };
                 Exception backgroundError = null;
@@ -223,7 +255,7 @@ namespace VestibularJoystickSim
                 bool timestampBeforeWait = captured.WaitOne(2000);
                 // The queued command is now 150 ms old, but the sender gap is
                 // below 250 ms. Only its original age should reject it.
-                c.Set(175); release.Set();
+                c.Set(origin + 175); release.Set();
                 Require(send.Join(2000) && publish.Join(2000) && backgroundError == null, "queued publish completes");
                 c.ReadHook = null; t.BeforeWrite = null;
                 Require(timestampBeforeWait, "publish timestamps before waiting for serial lock");
@@ -236,11 +268,11 @@ namespace VestibularJoystickSim
 
         private static void RearmClearsUiHistory()
         {
-            Clock c = new Clock(); Transport t = new Transport();
+            Clock c = new Clock(); Transport t = new Transport(c);
             UiCommandState state = new UiCommandState();
             using (SerialOutput sender = new SerialOutput(c, false))
             {
-                sender.Connect(t); sender.Arm(); sender.Publish(Motion); c.Set(25); sender.Pump();
+                sender.Connect(t); sender.Arm(); long origin = c.Milliseconds; sender.Publish(Motion); c.Set(origin + 25); sender.Pump();
                 // Model held input and an unfinished calibration when the UI
                 // stalls. The user releases the control before explicit rearm.
                 state.PRate = 0.785; state.QRate = -0.785; state.RRate = 0.785;
@@ -248,10 +280,10 @@ namespace VestibularJoystickSim
                 state.CalibrationDirection = 1; state.CalibrationStep = 33; state.CalibrationStart = DateTime.UtcNow;
                 for (int i = 0; i < 4; i++)
                 { state.CurrentBytes[i] = Motion[i]; state.PacketValues[i] = Motion[i] - 128; state.DacValues[i] = 15; }
-                c.Set(100); sender.Pump(); Require(!sender.Status.Armed, "stalled session ended");
+                c.Set(origin + 100); sender.Pump(); Require(!sender.Status.Armed, "stalled session ended");
 
                 // The Arm handler uses this same reset before the wire handshake.
-                state.Reset(); sender.Arm();
+                state.Reset(); sender.Arm(); origin = c.Milliseconds;
                 Require(state.PRate == 0 && state.QRate == 0 && state.RRate == 0 &&
                     state.CommandedP == 0 && state.CommandedQ == 0 && state.CommandedR == 0,
                     "old ramp and commanded axes cannot leak into a new arm");
@@ -261,8 +293,8 @@ namespace VestibularJoystickSim
                     Require(state.CurrentBytes[i] == 128 && state.PacketValues[i] == 0 && state.DacValues[i] == 0,
                         "all channels start neutral after rearm");
                 int start = t.Packets.Count;
-                for (int now = 125; now <= 175; now += 25)
-                { c.Set(now); sender.Publish(state.CurrentBytes); sender.Pump(); }
+                for (int now = 25; now <= 75; now += 25)
+                { c.Set(origin + now); sender.Publish(state.CurrentBytes); sender.Pump(); }
                 for (int i = start; i < t.Packets.Count; i++) Require(IsNeutral(t.Packets[i]), "released control remains neutral after rearm");
             }
         }

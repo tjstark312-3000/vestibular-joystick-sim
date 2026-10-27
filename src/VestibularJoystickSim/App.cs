@@ -110,7 +110,7 @@ namespace VestibularJoystickSim
         private readonly Stopwatch connectionAge = new Stopwatch();
         private readonly Stopwatch calibrationClock = new Stopwatch();
         private bool armed { get { return serialOutput.Status.Armed; } }
-        private DateTime lastTick;
+        private long lastTick;
         private DateTime lastSerialScan = DateTime.MinValue;
         private DateTime lastAutoConnectAttempt = DateTime.MinValue;
         private DateTime lastUiTextUpdate = DateTime.MinValue;
@@ -506,7 +506,7 @@ namespace VestibularJoystickSim
             diagnosticsButton.TabIndex = 5;
             gainSlider.TabIndex = 6;
 
-            lastTick = DateTime.UtcNow;
+            lastTick = Stopwatch.GetTimestamp();
             useMsfsPhysics = false;
             useForzaPhysics = false;
             timer = new System.Windows.Forms.Timer();
@@ -556,6 +556,7 @@ namespace VestibularJoystickSim
             public bool IsOpen { get; private set; }
             public void Open() { IsOpen = true; }
             public void Write(byte[] packet) { if (!IsOpen) throw new InvalidOperationException("Mock port closed"); }
+            public void SettleAfterReset() { }
             public void Close() { IsOpen = false; }
             public void Dispose() { Close(); }
         }
@@ -571,12 +572,19 @@ namespace VestibularJoystickSim
             UpdateUi();
             Refresh();
             Application.DoEvents();
+            File.AppendAllText(Path.Combine(directory, "layout.txt"), name + ": client=" + ClientSize + " window=" + Size + " screen=" + Screen.PrimaryScreen.Bounds + "\r\n");
+            SmokeRequire(Width >= ClientSize.Width && Height >= ClientSize.Height, "Native window clipped by runner desktop");
             Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton };
             foreach (Button control in controls)
             {
                 Rectangle box = RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
                 SmokeRequire(control.Visible && ClientRectangle.Contains(box), "Clipped control: " + control.Text);
                 SmokeRequire(control.Width >= 65 && control.Height >= 28, "Small control: " + control.Text);
+                for (Control parent = control.Parent; parent != null; parent = parent.Parent)
+                {
+                    Rectangle clip = RectangleToClient(parent.RectangleToScreen(parent.ClientRectangle));
+                    SmokeRequire(clip.Contains(box), "Control clipped by parent: " + control.Text);
+                }
             }
             using (Bitmap bitmap = new Bitmap(Width, Height))
             {
@@ -716,8 +724,9 @@ namespace VestibularJoystickSim
                 TryAutoConnectVestibularDevice();
             }
 
-            double dt = Math.Min((now - lastTick).TotalSeconds, 0.05);
-            lastTick = now;
+            long controlTick = Stopwatch.GetTimestamp();
+            double dt = Math.Max(0.0, Math.Min((controlTick - lastTick) / (double)Stopwatch.Frequency, 0.05));
+            lastTick = controlTick;
             UpdatePhysicalStickInput();
             UpdateMsfsInput();
             UpdateForzaInput();
@@ -1122,7 +1131,7 @@ namespace VestibularJoystickSim
                     Array.Sort(ports, ComparePortNames);
                     vestibularPort = FindPortByHardwareText(ports, new string[]
                     {
-                        "VID_2886&PID_8045", "VID_2886&PID_0145", "XIAO NRF52840"
+                        "VID_2886&PID_8045", "VID_2886&PID_0145"
                     });
                 }
                 catch
@@ -1228,7 +1237,7 @@ namespace VestibularJoystickSim
             if (!output.Armed && calibrationDirection != 0) ResetCommandHistory();
             connectButton.Text = output.Connected ? "Disconnect" : "Connect";
             portCombo.Enabled = !output.Connected;
-            armButton.Enabled = output.Connected && (output.Armed || connectionAge.ElapsedMilliseconds >= 3000);
+            armButton.Enabled = output.Connected && !paused && (output.Armed || connectionAge.ElapsedMilliseconds >= 3000);
             calLeftButton.Enabled = calRightButton.Enabled = output.Armed && !paused;
             stopCalButton.Enabled = calibrationDirection != 0;
             calLeftButton.BackColor = calibrationDirection > 0 ? Theme.Warning : Theme.PurpleDim;
@@ -1744,6 +1753,7 @@ namespace VestibularJoystickSim
 
         private static string FindPortByHardwareText(string[] ports, string[] needles)
         {
+            string selected = null;
             try
             {
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name, PNPDeviceID FROM Win32_PnPEntity WHERE Name LIKE '%(COM%'"))
@@ -1752,25 +1762,17 @@ namespace VestibularJoystickSim
                     foreach (ManagementObject device in devices)
                     {
                         string text = ((device["Name"] as string) ?? "") + " " + ((device["PNPDeviceID"] as string) ?? "");
-                        if (!ContainsAny(text, needles))
-                        {
-                            continue;
-                        }
-
+                        if (!ContainsAny(text, needles)) continue;
                         string port = ExtractPortName(text, ports);
-                        if (port != null)
-                        {
-                            return port;
-                        }
+                        if (port == null) continue;
+                        // Multiple application boards require manual COM selection.
+                        if (selected != null && !string.Equals(selected, port, StringComparison.OrdinalIgnoreCase)) return null;
+                        selected = port;
                     }
                 }
             }
-            catch
-            {
-                return null;
-            }
-
-            return null;
+            catch { return null; }
+            return selected;
         }
 
         private static string ExtractPortName(string text, string[] ports)
@@ -1778,8 +1780,7 @@ namespace VestibularJoystickSim
             for (int i = 0; i < ports.Length; i++)
             {
                 string port = ports[i];
-                if (text.IndexOf("(" + port + ")", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    text.IndexOf(port, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (text.IndexOf("(" + port + ")", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     return port;
                 }

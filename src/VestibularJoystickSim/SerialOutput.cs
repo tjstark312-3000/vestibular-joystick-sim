@@ -39,6 +39,7 @@ namespace VestibularJoystickSim
         bool IsOpen { get; }
         void Open();
         void Write(byte[] packet);
+        void SettleAfterReset();
         void Close();
     }
 
@@ -50,6 +51,19 @@ namespace VestibularJoystickSim
         public bool IsOpen { get { return port.IsOpen; } }
         public void Open() { port.Open(); }
         public void Write(byte[] packet) { port.Write(packet, 0, packet.Length); }
+        public void SettleAfterReset()
+        {
+            // NRF Reset deliberately drains its receive queue. A host Write
+            // completing does not mean the board has processed those bytes.
+            // Finish host transmission, then let Reset finish before sending
+            // the fresh Arm/neutral sequence. This wait occurs while disarmed.
+            Stopwatch pending = Stopwatch.StartNew();
+            while (port.BytesToWrite > 0 && pending.ElapsedMilliseconds < 100)
+                Thread.Sleep(1);
+            if (port.BytesToWrite > 0)
+                throw new TimeoutException("Serial reset did not finish transmitting.");
+            Thread.Sleep(100);
+        }
         public void Close() { port.Close(); }
         public void Dispose() { port.Dispose(); }
     }
@@ -151,6 +165,7 @@ namespace VestibularJoystickSim
                     // before the unchanged Direct + exact-neutral handshake.
                     WriteLocked(NeutralFrame());
                     WriteLocked(Frame(new int[] { 1 }));
+                    transport.SettleAfterReset();
                     WriteLocked(Frame(new int[] { 2 }));
                     WriteLocked(NeutralFrame());
                     ClearSnapshot(clock.Milliseconds);
