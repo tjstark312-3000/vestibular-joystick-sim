@@ -78,6 +78,21 @@ namespace VestibularJoystickSim
         }
     }
 
+    internal sealed class VForceButton : Button
+    {
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (Enabled) { base.OnPaint(e); return; }
+            // WinForms' default disabled flat-button text is black on this
+            // purple theme. Keep disabled calibration labels readable.
+            e.Graphics.Clear(BackColor);
+            using (Pen border = new Pen(Theme.PurpleDim))
+                e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Theme.SecondaryText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
     internal sealed class MainForm : Form
     {
         private enum GameKind
@@ -1274,6 +1289,8 @@ namespace VestibularJoystickSim
             stopCalButton.Enabled = calibrationDirection != 0;
             calLeftButton.BackColor = calibrationDirection > 0 ? Theme.Warning : Theme.PurpleDim;
             calRightButton.BackColor = calibrationDirection < 0 ? Theme.Warning : Theme.PurpleDim;
+            calLeftButton.ForeColor = calibrationDirection > 0 ? Color.Black : Theme.Text;
+            calRightButton.ForeColor = calibrationDirection < 0 ? Color.Black : Theme.Text;
             if (output.Error != null) SetStatus(output.Error);
             MotionSnapshot activeGameMotion = GetFreshGameMotion();
             double displayYaw;
@@ -1724,7 +1741,7 @@ namespace VestibularJoystickSim
 
         private static Button MakeButton(string text)
         {
-            Button button = new Button();
+            Button button = new VForceButton();
             button.Text = text;
             button.Width = 82;
             button.Height = 44;
