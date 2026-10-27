@@ -90,6 +90,7 @@ namespace VestibularJoystickSim
         private readonly Button pauseButton;
         private readonly Button calLeftButton, calRightButton, stopCalButton;
         private readonly bool offlineMode;
+        private Control smokeSurface;
         private readonly Button refreshButton;
         private readonly Button msfsLaunchButton;
         private readonly Button forzaLaunchButton;
@@ -568,27 +569,27 @@ namespace VestibularJoystickSim
 
         private void SaveSmokeFrame(string directory, string name)
         {
-            PerformLayout();
+            Control surface = smokeSurface ?? this;
+            surface.PerformLayout();
             UpdateUi();
-            Refresh();
+            surface.Refresh();
             Application.DoEvents();
-            File.AppendAllText(Path.Combine(directory, "layout.txt"), name + ": client=" + ClientSize + " window=" + Size + " screen=" + Screen.PrimaryScreen.Bounds + "\r\n");
-            SmokeRequire(Width >= ClientSize.Width && Height >= ClientSize.Height, "Native window clipped by runner desktop");
+            File.AppendAllText(Path.Combine(directory, "layout.txt"), name + ": rendered_client=" + surface.ClientSize + " bitmap=" + surface.Size + " runner_screen=" + Screen.PrimaryScreen.Bounds + "\r\n");
             Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton };
             foreach (Button control in controls)
             {
-                Rectangle box = RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
-                SmokeRequire(control.Visible && ClientRectangle.Contains(box), "Clipped control: " + control.Text);
+                Rectangle box = surface.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+                SmokeRequire(control.Visible && surface.ClientRectangle.Contains(box), "Clipped control: " + control.Text);
                 SmokeRequire(control.Width >= 65 && control.Height >= 28, "Small control: " + control.Text);
                 for (Control parent = control.Parent; parent != null; parent = parent.Parent)
                 {
-                    Rectangle clip = RectangleToClient(parent.RectangleToScreen(parent.ClientRectangle));
+                    Rectangle clip = surface.RectangleToClient(parent.RectangleToScreen(parent.ClientRectangle));
                     SmokeRequire(clip.Contains(box), "Control clipped by parent: " + control.Text);
                 }
             }
-            using (Bitmap bitmap = new Bitmap(Width, Height))
+            using (Bitmap bitmap = new Bitmap(surface.Width, surface.Height))
             {
-                DrawToBitmap(bitmap, new Rectangle(0, 0, Width, Height));
+                surface.DrawToBitmap(bitmap, new Rectangle(0, 0, surface.Width, surface.Height));
                 bitmap.Save(Path.Combine(directory, name + ".png"), System.Drawing.Imaging.ImageFormat.Png);
             }
         }
@@ -599,16 +600,23 @@ namespace VestibularJoystickSim
             try
             {
                 using (MainForm form = new MainForm(true))
+                using (Panel surface = new Panel())
                 {
-                    form.Show();
-                    form.ClientSize = new Size(1280, 800);
+                    // Render the actual view tree independently of the hosted
+                    // runner's small desktop. Form.SetBoundsCore otherwise clamps
+                    // a normal window to MaxWindowTrackSize and clips the bitmap.
+                    form.smokeSurface = surface;
+                    surface.Size = new Size(1280, 800);
+                    surface.Controls.Add(form.Controls[0]);
+                    surface.CreateControl();
+                    surface.Show();
                     form.SaveSmokeFrame(directory, "purple-1280x800");
                     SmokeRequire(!form.armed && !form.calLeftButton.Enabled && !form.calRightButton.Enabled, "Calibration enabled while disarmed");
-                    form.ClientSize = new Size(1180, 650);
+                    surface.Size = new Size(1180, 650);
                     form.SaveSmokeFrame(directory, "purple-1180x650");
-                    form.Size = form.MinimumSize;
+                    surface.Size = new Size(1124, 621);
                     form.SaveSmokeFrame(directory, "purple-minimum");
-                    form.ClientSize = new Size(1280, 720);
+                    surface.Size = new Size(1280, 720);
                     form.SaveSmokeFrame(directory, "purple-1280x720");
                     form.serialOutput.Connect(new SmokeTransport());
                     form.connectedPortName = "SIMULATED";
@@ -638,9 +646,13 @@ namespace VestibularJoystickSim
                     SmokeRequire(form.useForzaPhysics && !form.useMsfsPhysics && !form.armed, "Forza source selection");
                     form.SelectGame(GameKind.Msfs);
                     SmokeRequire(form.useMsfsPhysics && !form.useForzaPhysics && !form.armed, "MSFS source selection");
-                    form.Close();
+                    form.SafeDisarmAndClose();
+                    form.serialOutput.Dispose();
+                    form.msfsInput.Dispose();
+                    form.forzaInput.Dispose();
+                    form.toolTip.Dispose();
                 }
-                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: device-free Windows layout at 1280x800, 1280x720, 1180x650 and minimum size; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
                 return 0;
             }
             catch (Exception ex)
