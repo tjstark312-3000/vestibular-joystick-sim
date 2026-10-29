@@ -1,4 +1,4 @@
-name: SYNTHETIC Forza capture on verified v1.2.3
+name: SYNTHETIC Forza capture on verified v1.2.4
 
 on:
   push:
@@ -25,20 +25,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 40945648200 --repo '${{ github.repository }}' `
-            --name 'VFORCE-Purple-NRF-v1.2.3-2026.10.29' --dir 'work\verified-v123'
+          gh run download 40947870045 --repo '${{ github.repository }}' `
+            --name 'VFORCE-Purple-NRF-v1.2.4-2026.10.29' --dir 'work\verified-v124'
 
       - name: Capture an external SYNTHETIC UDP fixture with USB closed
         shell: pwsh
         run: |
-          $exe = Join-Path $PWD 'work\verified-v123\VFORCE-Purple-NRF-v1.2.3-2026.10.29\VestibularJoystickSim.exe'
+          $exe = Join-Path $PWD 'work\verified-v124\VFORCE-Purple-NRF-v1.2.4-2026.10.29\VestibularJoystickSim.exe'
           .\tools\Test-SyntheticForzaCapture.ps1 -ExecutablePath $exe `
-            -OutputDirectory (Join-Path $PWD 'outputs\SYNTHETIC-forza-capture-v1.2.3')
+            -OutputDirectory (Join-Path $PWD 'outputs\SYNTHETIC-forza-capture-v1.2.4')
 
       - name: Upload SYNTHETIC evidence, never live game data
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SYNTHETIC-Forza-capture-verified-v1.2.3
+          name: SYNTHETIC-Forza-capture-verified-v1.2.4
           if-no-files-found: error
-          path: outputs/SYNTHETIC-forza-capture-v1.2.3/
+          path: outputs/SYNTHETIC-forza-capture-v1.2.4/

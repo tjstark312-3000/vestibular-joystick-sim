@@ -4,13 +4,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedExeHash = '20ff91963482887f4bb2dd1b6c20b769720e707a7bed494914edbd7f3a262e25'
-$expectedSource = '6db408ba948e0c3fdaaaffad5be02fb58a4aef0d'
+$expectedExeHash = '852e2b288190554ec5071fe8941486abb404a170c2b5f799744f460c27c35787'
+$expectedSource = 'bc170b8bd57e0dd8f728e26342d2ff4b877a440c'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $actualHash = (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualHash -ne $expectedExeHash) { throw 'This check must use the previously verified v1.2.3 EXE.' }
+if ($actualHash -ne $expectedExeHash) { throw 'This check must use the previously verified v1.2.4 EXE.' }
 $buildInfo = Get-Content -LiteralPath (Join-Path (Split-Path $ExecutablePath -Parent) 'BUILD-INFO.txt') -Raw
-if ($buildInfo -notmatch "source_commit=$expectedSource" -or $buildInfo -notmatch 'workflow_run=40945648200') {
+if ($buildInfo -notmatch "source_commit=$expectedSource" -or $buildInfo -notmatch 'workflow_run=40947870045') {
     throw 'Verified executable build provenance does not match.'
 }
 
@@ -181,7 +181,7 @@ $validation = [ordered]@{
     result = 'PASS'
     tested_executable_sha256 = $actualHash
     tested_source_commit = $expectedSource
-    original_package_workflow_run = 40945648200
+    original_package_workflow_run = 40947870045
     capture_seconds = 5
     sender_datagrams = $sequence
     timestamp_increment_ms = 25
