@@ -22,6 +22,22 @@ namespace VestibularJoystickSim
         public double RollDeg;
         public double PitchDeg;
         public double YawDeg;
+        // Diagnostic source values only; never a hardware/head-pose readback.
+        public double NativeX;
+        public double NativeY;
+        public double NativeZ;
+        public uint? NativeTimestampMs;
+        public string RawPrefixHex;
+
+        public double AgeMilliseconds
+        {
+            get
+            {
+                if (!Connected) return -1.0;
+                long age = Stopwatch.GetTimestamp() - receivedTicks;
+                return age < 0 ? -1.0 : age * 1000.0 / Stopwatch.Frequency;
+            }
+        }
 
         public bool IsFresh
         {
@@ -45,6 +61,9 @@ namespace VestibularJoystickSim
             snapshot.RollDeg = Sanitize(rollDeg);
             snapshot.PitchDeg = Sanitize(pitchDeg);
             snapshot.YawDeg = Sanitize(yawDeg);
+            snapshot.NativeX = q;
+            snapshot.NativeY = r;
+            snapshot.NativeZ = p;
             return snapshot;
         }
 
@@ -94,6 +113,8 @@ namespace VestibularJoystickSim
         private long lastPollTicks;
 
         public ForzaUdpTelemetryInput() : this(PrimaryPort, SecondaryPort) { }
+
+        public int ListeningPortCount { get { return clients.Count; } }
 
         private ForzaUdpTelemetryInput(int primary, int secondary)
         {
@@ -176,6 +197,7 @@ namespace VestibularJoystickSim
         {
             byte[] packet = new byte[MinimumSledPacketBytes];
             WriteInt32(packet, 0, 1);
+            WriteInt32(packet, 4, 123456);
             WriteSingle(packet, 44, 0.2f);
             WriteSingle(packet, 48, 0.3f);
             WriteSingle(packet, 52, 0.1f);
@@ -189,7 +211,10 @@ namespace VestibularJoystickSim
                 Math.Abs(motion.Q - 0.2) >= 0.0001 ||
                 Math.Abs(motion.R - 0.3) >= 0.0001 ||
                 Math.Abs(motion.RollDeg - (0.1 * 180.0 / Math.PI)) >= 0.0001 ||
-                Math.Abs(motion.PitchDeg - (-0.2 * 180.0 / Math.PI)) >= 0.0001)
+                Math.Abs(motion.PitchDeg - (-0.2 * 180.0 / Math.PI)) >= 0.0001 ||
+                Math.Abs(motion.NativeX - 0.2) >= 0.0001 || Math.Abs(motion.NativeY - 0.3) >= 0.0001 ||
+                Math.Abs(motion.NativeZ - 0.1) >= 0.0001 || motion.NativeTimestampMs != 123456 ||
+                motion.RawPrefixHex == null || motion.RawPrefixHex.Length != 203 || motion.AgeMilliseconds < 0)
             {
                 return false;
             }
@@ -295,6 +320,8 @@ namespace VestibularJoystickSim
                 roll * 180.0 / Math.PI,
                 pitch * 180.0 / Math.PI,
                 yaw * 180.0 / Math.PI);
+            motion.NativeTimestampMs = unchecked((uint)ReadInt32(data, 4));
+            motion.RawPrefixHex = BitConverter.ToString(data, 0, 68);
             return true;
         }
 
@@ -481,7 +508,10 @@ namespace VestibularJoystickSim
                 input.pauseKnown = true;
                 input.simRunning = true;
                 input.Dispatch(data, 64, IntPtr.Zero);
-                if (!input.latest.IsFresh || Math.Abs(input.latest.P - 0.3) > 0.0001) return false;
+                if (!input.latest.IsFresh || Math.Abs(input.latest.P - 0.3) > 0.0001 ||
+                    input.latest.RawPrefixHex == null || input.latest.RawPrefixHex.Length != 191 ||
+                    Math.Abs(input.latest.NativeX - 0.1) > 0.0001 || Math.Abs(input.latest.NativeY - 0.2) > 0.0001 ||
+                    Math.Abs(input.latest.NativeZ - 0.3) > 0.0001) return false;
                 input.latest = MotionSnapshot.Empty("test");
                 Marshal.WriteInt32(data, 12, 99);
                 input.Dispatch(data, 64, IntPtr.Zero);
@@ -722,6 +752,12 @@ namespace VestibularJoystickSim
             double bodyY = ReadDouble(data, SimobjectDataOffset + 8);
             double bodyZ = ReadDouble(data, SimobjectDataOffset + 16);
             latest = MapBodyRates(bodyX, bodyY, bodyZ);
+            if (latest.Connected)
+            {
+                byte[] prefix = new byte[64];
+                Marshal.Copy(data, prefix, 0, prefix.Length);
+                latest.RawPrefixHex = BitConverter.ToString(prefix);
+            }
             status = latest.Source;
         }
 

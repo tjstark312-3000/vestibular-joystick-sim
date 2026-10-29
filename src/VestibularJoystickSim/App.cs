@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.IO.Ports;
 using System.Management;
@@ -11,13 +12,14 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Text;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.2.0")]
-[assembly: AssemblyFileVersion("1.2.2.0")]
+[assembly: AssemblyVersion("1.2.3.0")]
+[assembly: AssemblyFileVersion("1.2.3.0")]
 
 namespace VestibularJoystickSim
 {
@@ -28,6 +30,13 @@ namespace VestibularJoystickSim
         [STAThread]
         private static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--capture-telemetry")
+            {
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                return MainForm.CaptureTelemetry(args);
+            }
             if (args.Length > 0 && string.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
                 return RunSelfTests(args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "vforce-self-test-results.txt"));
@@ -588,6 +597,9 @@ namespace VestibularJoystickSim
         public static bool SelfTest()
         {
             return ClassicNrfProfile.SelfTest() &&
+                   PacketValuesEqual(BodyToAlignedHeadRates(0.1, -0.2, 0.3), new double[] { 0.1, -0.2, 0.3 }) &&
+                   Math.Abs(SlewRate(0, 1) - GvsMaxRamp) < 1e-12 &&
+                   Math.Abs(SlewRate(0, -1) + GvsMaxRamp) < 1e-12 &&
                    CalibrationIntensity(0) == 0 && CalibrationIntensity(2.5) == 1 && CalibrationIntensity(5) == 0 &&
                    PacketValuesEqual(JoystickToCommandedRates(0, 0, -1, 1), new double[] { -GvsMaxRate, 0, 0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
@@ -602,6 +614,147 @@ namespace VestibularJoystickSim
                    SelectGameMotion(false, MotionSnapshot.Empty("MSFS off"), true, MotionSnapshot.Fresh("Forza", -0.1, -0.2, -0.3, 0.0, 0.0, 0.0)).Source == "Forza" &&
                    ForzaUdpTelemetryInput.SelfTest() &&
                    MsfsSimConnectInput.SelfTest();
+        }
+
+        private static string CaptureNumber(double value)
+        {
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string CaptureCsv(string value)
+        {
+            value = value ?? "";
+            return "\"" + value.Replace("\"", "\"\"") + "\"";
+        }
+
+        private static string CaptureJson(string value)
+        {
+            if (value == null) return "null";
+            return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
+        }
+
+        public static int CaptureTelemetry(string[] args)
+        {
+            string requested = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+            string output = null;
+            double seconds = 30;
+            try
+            {
+                if (requested != "forza" && requested != "msfs") throw new ArgumentException("Source must be forza or msfs.");
+                for (int i = 2; i < args.Length; i += 2)
+                {
+                    if (i + 1 >= args.Length) throw new ArgumentException("Capture option requires a value.");
+                    if (args[i] == "--seconds") seconds = double.Parse(args[i + 1], CultureInfo.InvariantCulture);
+                    else if (args[i] == "--out") output = args[i + 1];
+                    else throw new ArgumentException("Unknown capture option: " + args[i]);
+                }
+                if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 1 || seconds > 300)
+                    throw new ArgumentException("Capture duration must be between 1 and 300 seconds.");
+                if (string.IsNullOrEmpty(output)) throw new ArgumentException("Specify --out capture.csv.");
+                output = Path.GetFullPath(output);
+                Directory.CreateDirectory(Path.GetDirectoryName(output));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Capture usage: --capture-telemetry <forza|msfs> --seconds 30 --out capture.csv. " + ex.Message);
+                return 4;
+            }
+
+            int rows = 0, freshRows = 0, listeningPorts = 0;
+            string error = null;
+            DateTime startedUtc = DateTime.UtcNow;
+            Stopwatch elapsed = Stopwatch.StartNew();
+            try
+            {
+                // The offline constructor disables serial discovery, connection,
+                // the output worker and UI timers. This branch never calls Arm,
+                // Connect, OpenGame or any input-injection API.
+                using (MainForm form = new MainForm(true))
+                using (StreamWriter writer = new StreamWriter(output, false, new UTF8Encoding(false)))
+                {
+                    form.SelectGame(requested == "forza" ? GameKind.Forza : GameKind.Msfs);
+                    IntPtr messageWindow = form.Handle; // SimConnect needs a real message target.
+                    writer.WriteLine("utc,elapsed_ms,requested_source,source,fresh,latest_sample_age_ms,native_timestamp_ms,raw_prefix_hex,native_x_rad_s,native_y_rad_s,native_z_rad_s,body_p_rad_s,body_q_rad_s,body_r_rad_s,aligned_command_p_rad_s,aligned_command_q_rad_s,aligned_command_r_rad_s,slew_preview_p_rad_s,slew_preview_q_rad_s,slew_preview_r_rad_s,nominal_preview_a_mA,nominal_preview_b_mA,nominal_preview_c_mA,nominal_preview_d_mA,preview_byte_a,preview_byte_b,preview_byte_c,preview_byte_d,preview_packet_hex,actual_packets_sent,serial_connected,armed");
+                    MotionSnapshot lastValid = MotionSnapshot.Empty("No sample");
+                    double previewP = 0, previewQ = 0, previewR = 0;
+                    long nextPoll = 0;
+                    try
+                    {
+                        while (elapsed.Elapsed.TotalSeconds < seconds)
+                        {
+                            Application.DoEvents();
+                            if (elapsed.ElapsedMilliseconds < nextPoll) { Thread.Sleep(1); continue; }
+                            nextPoll = elapsed.ElapsedMilliseconds + 25;
+                            form.UpdateMsfsInput();
+                            form.UpdateForzaInput();
+                            if (requested == "forza")
+                            {
+                                listeningPorts = form.forzaInput.ListeningPortCount;
+                                if (listeningPorts == 0)
+                                    throw new InvalidOperationException("Cannot bind Forza UDP 5300/5607. Close the existing VFORCE GUI and other telemetry receivers, then retry capture.");
+                            }
+                            MotionSnapshot observed = requested == "forza" ? form.forzaMotion : form.msfsMotion;
+                            bool fresh = observed.IsFresh;
+                            if (fresh) { lastValid = observed; freshRows++; }
+                            MotionSnapshot raw = fresh ? observed : lastValid;
+                            double[] command = form.BuildCommandedRates(0, 0, 0);
+                            double[] aligned = BodyToAlignedHeadRates(command[0], command[1], command[2]);
+                            previewP = SlewRate(previewP, aligned[0]);
+                            previewQ = SlewRate(previewQ, aligned[1]);
+                            previewR = SlewRate(previewR, aligned[2]);
+                            double[] nominal = PqrToCodeMatrixCurrents(previewP, previewQ, previewR, DefaultCurrentPeakMilliamp);
+                            int[] bytes = CurrentsToUartBytes(nominal);
+                            byte[] packet = SerialOutput.Frame(new int[] { 10, bytes[0], bytes[1], bytes[2], bytes[3] });
+                            OutputStatus actual = form.serialOutput.Status;
+                            if (actual.Connected || actual.Armed || actual.PacketCount != 0)
+                                throw new InvalidOperationException("Capture violated its no-USB/no-transmission invariant.");
+                            string[] row = new string[] {
+                                CaptureCsv(DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)), elapsed.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture),
+                                CaptureCsv(requested), CaptureCsv(observed.Source), fresh ? "true" : "false", CaptureNumber(raw.AgeMilliseconds),
+                                raw.NativeTimestampMs.HasValue ? raw.NativeTimestampMs.Value.ToString(CultureInfo.InvariantCulture) : "", CaptureCsv(raw.RawPrefixHex),
+                                CaptureNumber(raw.NativeX), CaptureNumber(raw.NativeY), CaptureNumber(raw.NativeZ),
+                                CaptureNumber(raw.P), CaptureNumber(raw.Q), CaptureNumber(raw.R),
+                                CaptureNumber(aligned[0]), CaptureNumber(aligned[1]), CaptureNumber(aligned[2]),
+                                CaptureNumber(previewP), CaptureNumber(previewQ), CaptureNumber(previewR),
+                                CaptureNumber(nominal[0]), CaptureNumber(nominal[1]), CaptureNumber(nominal[2]), CaptureNumber(nominal[3]),
+                                bytes[0].ToString(CultureInfo.InvariantCulture), bytes[1].ToString(CultureInfo.InvariantCulture),
+                                bytes[2].ToString(CultureInfo.InvariantCulture), bytes[3].ToString(CultureInfo.InvariantCulture),
+                                CaptureCsv(BitConverter.ToString(packet)), actual.PacketCount.ToString(CultureInfo.InvariantCulture), "false", "false"
+                            };
+                            writer.WriteLine(string.Join(",", row));
+                            rows++;
+                        }
+                    }
+                    finally
+                    {
+                        writer.Flush();
+                        form.Close();
+                    }
+                }
+            }
+            catch (Exception ex) { error = ex.Message; }
+            elapsed.Stop();
+            string warning = requested == "forza" && listeningPorts == 1 ?
+                "Only one Forza UDP port could be opened. Close other telemetry receivers before relying on this capture." : null;
+            string summary = "{\n" +
+                "  \"scope\": \"shadow_telemetry_preview_no_usb\",\n" +
+                "  \"source\": " + CaptureJson(requested) + ",\n" +
+                "  \"started_utc\": " + CaptureJson(startedUtc.ToString("o", CultureInfo.InvariantCulture)) + ",\n" +
+                "  \"duration_seconds\": " + CaptureNumber(elapsed.Elapsed.TotalSeconds) + ",\n" +
+                "  \"rows\": " + rows.ToString(CultureInfo.InvariantCulture) + ",\n" +
+                "  \"fresh_rows\": " + freshRows.ToString(CultureInfo.InvariantCulture) + ",\n" +
+                "  \"forza_listening_ports\": " + listeningPorts.ToString(CultureInfo.InvariantCulture) + ",\n" +
+                "  \"head_frame\": \"aligned_body_head_assumption_no_tracking\",\n" +
+                "  \"nominal_limit_mA\": " + CaptureNumber(DefaultCurrentPeakMilliamp) + ",\n" +
+                "  \"matrix_gain_mA_per_rad_s\": " + CaptureNumber(DefaultCurrentPeakMilliamp / (1.5 * GvsMaxRate)) + ",\n" +
+                "  \"matrix_limiter\": \"shared_peak_bound_then_balanced_integer_quantization\",\n" +
+                "  \"usb_open_count\": 0,\n  \"actual_packets_sent\": 0,\n  \"serial_connected\": false,\n  \"armed\": false,\n" +
+                "  \"note\": \"Packet and current columns are computed previews, never transmitted or measured; stale rows retain the last raw sample with fresh=false.\",\n" +
+                "  \"warning\": " + CaptureJson(warning) + ",\n" +
+                "  \"error\": " + CaptureJson(error) + "\n}\n";
+            try { File.WriteAllText(output + ".summary.json", summary, new UTF8Encoding(false)); }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 4; }
+            return error == null ? 0 : 4;
         }
 
         private sealed class SmokeTransport : IOutputTransport
@@ -678,6 +831,7 @@ namespace VestibularJoystickSim
                     form.calLeftButton.PerformClick();
                     Thread.Sleep(120);
                     form.UpdateVestibularOutput();
+                    form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
                     form.SendVestibularOutput();
                     form.serialOutput.Pump();
                     SmokeRequire(form.calibrationDirection == 1 && form.currentBytes[0] < 128 && form.currentBytes[2] > 128, "Left Cal did not produce left direction");
@@ -689,6 +843,7 @@ namespace VestibularJoystickSim
                     form.calRightButton.PerformClick();
                     Thread.Sleep(120);
                     form.UpdateVestibularOutput();
+                    form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
                     form.SendVestibularOutput();
                     form.serialOutput.Pump();
                     SmokeRequire(form.calibrationDirection == -1 && form.currentBytes[0] > 128 && form.currentBytes[2] < 128, "Right Cal did not produce right direction");
@@ -703,6 +858,7 @@ namespace VestibularJoystickSim
                     SmokeRequire(form.physicalInput.SelectedXInputIndex == 2 && !form.armed && form.calibrationDirection == 0, "Explicit controller selection did not disarm");
                     form.SelectController(-1);
                     SmokeRequire(form.physicalInput.SelectedXInputIndex == -1, "Auto controller selection");
+                    form.RunAlignedFrameRegression(directory);
                     form.SafeDisarmAndClose();
                     form.serialOutput.Dispose();
                     form.msfsInput.Dispose();
@@ -710,7 +866,7 @@ namespace VestibularJoystickSim
                     form.toolTip.Dispose();
                 }
                 RunMenuLifecycleSmoke(directory);
-                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: game/controller native menu-click lifecycle and repeated reopen; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: aligned-frame game/joystick cross-axis regression at varied visual attitudes; game/controller native menu-click lifecycle and repeated reopen; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
                 return 0;
             }
             catch (Exception ex)
@@ -718,6 +874,71 @@ namespace VestibularJoystickSim
                 File.WriteAllText(Path.Combine(directory, "result.txt"), ex.ToString());
                 return 3;
             }
+        }
+
+        private void RunAlignedFrameRegression(string directory)
+        {
+            string report = Path.Combine(directory, "aligned-frame-regression.txt");
+            File.WriteAllText(report, "Device-free actual GUI command-path regression with mock transport; no physical output or head tracker.\r\n");
+            double[][] attitudes = new double[][] {
+                new double[] { 0, 0, 0 }, new double[] { 28, 55, 65 }, new double[] { -28, -55, -65 }
+            };
+            GameKind[] games = new GameKind[] { GameKind.Forza, GameKind.Msfs };
+            int cases = 0;
+            foreach (GameKind game in games)
+            for (int axis = 0; axis < 3; axis++)
+            for (int sign = -1; sign <= 1; sign += 2)
+            {
+                int[] baseline = null;
+                foreach (double[] attitude in attitudes)
+                {
+                    SelectGame(game);
+                    paused = false;
+                    inputX = inputY = 0;
+                    serialOutput.Arm(); // Mock transport only, established by UiSmokeTest.
+                    roll = attitude[0]; pitch = attitude[1]; yaw = attitude[2];
+                    double[] expected = new double[3];
+                    expected[axis] = sign * 0.3;
+                    for (int tick = 0; tick < 12; tick++)
+                    {
+                        MotionSnapshot sample = MotionSnapshot.Fresh("fixture " + game, expected[0], expected[1], expected[2], attitude[0], attitude[1], attitude[2]);
+                        if (game == GameKind.Forza) forzaMotion = sample;
+                        else msfsMotion = sample;
+                        UpdateVestibularOutput();
+                    }
+                    SmokeRequire(PacketValuesEqual(new double[] { pRate, qRate, rRate }, expected),
+                        "Pure game axis acquired cross-axis motion from display attitude");
+                    if (baseline == null) baseline = (int[])currentBytes.Clone();
+                    else SmokeRequire(IntValuesEqual(currentBytes, baseline), "Display attitude changed channel packet");
+                    File.AppendAllText(report, "PASS " + game + " axis=" + axis + " sign=" + sign + " visual=" +
+                        string.Join("/", Array.ConvertAll(attitude, CaptureNumber)) + " bytes=" +
+                        string.Join("/", Array.ConvertAll(currentBytes, delegate(int value) { return value.ToString(CultureInfo.InvariantCulture); })) + "\r\n");
+                    cases++;
+                }
+            }
+            // Preserve the designed left-stick yaw/pitch mapping independently of
+            // game selection and independently of the animated display attitude.
+            for (int axis = 0; axis < 2; axis++)
+            for (int sign = -1; sign <= 1; sign += 2)
+            foreach (double[] attitude in attitudes)
+            {
+                serialOutput.Disarm();
+                ResetCommandHistory();
+                useForzaPhysics = useMsfsPhysics = false;
+                paused = false;
+                inputX = axis == 0 ? sign : 0;
+                inputY = axis == 1 ? sign : 0;
+                roll = attitude[0]; pitch = attitude[1]; yaw = attitude[2];
+                serialOutput.Arm();
+                for (int tick = 0; tick < 32; tick++) UpdateVestibularOutput();
+                double[] expected = axis == 0 ? new double[] { 0, 0, sign * GvsMaxRate } : new double[] { 0, sign * GvsMaxRate, 0 };
+                SmokeRequire(PacketValuesEqual(new double[] { pRate, qRate, rRate }, expected), "Joystick yaw/pitch mapping changed with display attitude");
+                cases++;
+            }
+            serialOutput.Disarm();
+            ResetCommandHistory();
+            inputX = inputY = 0;
+            File.AppendAllText(report, "PASS " + cases + " pure-axis game/joystick cases; body/head alignment is an explicit assumption.\r\n");
         }
 
         [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
@@ -966,11 +1187,14 @@ namespace VestibularJoystickSim
             commandedP = commanded[0];
             commandedQ = commanded[1];
             commandedR = commanded[2];
-            double[] headPqr = calibrationDirection != 0 ? commanded : RotateRates(commandedP, commandedQ, commandedR, roll, pitch, yaw);
+            // Game telemetry already reports body-frame angular velocity. Without
+            // an actual head-pose input, explicitly assume the head is aligned to
+            // that frame. Display animation is never a head-orientation sensor.
+            double[] headPqr = BodyToAlignedHeadRates(commandedP, commandedQ, commandedR);
 
-            pRate += Clamp(headPqr[0] - pRate, -GvsMaxRamp, GvsMaxRamp);
-            qRate += Clamp(headPqr[1] - qRate, -GvsMaxRamp, GvsMaxRamp);
-            rRate += Clamp(headPqr[2] - rRate, -GvsMaxRamp, GvsMaxRamp);
+            pRate = SlewRate(pRate, headPqr[0]);
+            qRate = SlewRate(qRate, headPqr[1]);
+            rRate = SlewRate(rRate, headPqr[2]);
 
             double[] currents = PqrToCodeMatrixCurrents(pRate, qRate, rRate, currentPeakMilliamp);
             int[] bytes = CurrentsToUartBytes(currents);
@@ -1723,6 +1947,9 @@ namespace VestibularJoystickSim
                 "Controller: " + (physicalInputConnected ? physicalInputSource : "not detected") + "\r\n" +
                 "Left stick: X " + inputX.ToString("0.000") + "  Y " + inputY.ToString("0.000") + "\r\n" +
                 "Game physics: " + (gameMotion.IsFresh ? gameMotion.Source + " live" : "waiting") + "\r\n" +
+                "Frame model: aligned body/head assumption; no head tracking input\r\n" +
+                "Game body P/Q/R (rad/s): " + gameMotion.P.ToString("0.000") + " / " + gameMotion.Q.ToString("0.000") + " / " + gameMotion.R.ToString("0.000") + "\r\n" +
+                "Display attitude does not change the output frame\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "VMocion: " + ((serialOutput.Status.Connected) ? connectedPortName + " serial open (no firmware ACK)" : "not connected") + "\r\n" +
@@ -1966,13 +2193,14 @@ namespace VestibularJoystickSim
             }
         }
 
-        private static double[] RotateRates(double p, double q, double r, double phiDeg, double thetaDeg, double psiDeg)
+        private static double[] BodyToAlignedHeadRates(double p, double q, double r)
         {
-            double[] vector = new double[] { p, q, r };
-            vector = MatMulVec(RotZ(-psiDeg * Math.PI / 180.0), vector);
-            vector = MatMulVec(RotY(-thetaDeg * Math.PI / 180.0), vector);
-            vector = MatMulVec(RotX(-phiDeg * Math.PI / 180.0), vector);
-            return vector;
+            return new double[] { p, q, r };
+        }
+
+        private static double SlewRate(double previous, double target)
+        {
+            return previous + Clamp(target - previous, -GvsMaxRamp, GvsMaxRamp);
         }
 
         private static string FindPortByHardwareText(string[] ports, string[] needles)
@@ -2189,46 +2417,6 @@ namespace VestibularJoystickSim
 
             double scaled = (Math.Abs(value) - Deadzone) / (1.0 - Deadzone);
             return value > 0.0 ? scaled : -scaled;
-        }
-
-        private static double[][] RotX(double phi)
-        {
-            return new double[][]
-            {
-                new double[] { 1, 0, 0 },
-                new double[] { 0, Math.Cos(phi), -Math.Sin(phi) },
-                new double[] { 0, Math.Sin(phi), Math.Cos(phi) }
-            };
-        }
-
-        private static double[][] RotY(double theta)
-        {
-            return new double[][]
-            {
-                new double[] { Math.Cos(theta), 0, Math.Sin(theta) },
-                new double[] { 0, 1, 0 },
-                new double[] { -Math.Sin(theta), 0, Math.Cos(theta) }
-            };
-        }
-
-        private static double[][] RotZ(double psi)
-        {
-            return new double[][]
-            {
-                new double[] { Math.Cos(psi), -Math.Sin(psi), 0 },
-                new double[] { Math.Sin(psi), Math.Cos(psi), 0 },
-                new double[] { 0, 0, 1 }
-            };
-        }
-
-        private static double[] MatMulVec(double[][] matrix, double[] vector)
-        {
-            return new double[]
-            {
-                matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
-                matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
-                matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2]
-            };
         }
 
         private static double Lerp(double from, double to, double amount)

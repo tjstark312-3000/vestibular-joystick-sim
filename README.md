@@ -1,26 +1,50 @@
-# VFORCE Purple GUI — NRF v1.2.2 (2026.10.29)
+# VFORCE Purple GUI — NRF v1.2.3 (2026.10.29)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
 
-## v1.2.2 game-menu hotfix
+## v1.2.3 aligned-head mapping and telemetry capture
 
-This GUI-only hotfix addresses the `ObjectDisposedException` involving
-`ContextMenuStrip` observed when opening the Forza or Flight Sim game menu
-on the ASUS ROG Ally. The menu lifecycle is corrected so repeated game-menu
-opens and selections do not use a disposed menu. Left Cal, Right Cal, the
-controller selector and the NRF v0.8.1 protocol remain part of this GUI.
+Game telemetry already supplies body-frame rotation rates: **P = roll**,
+**Q = pitch**, and **R = yaw**. This update keeps those rates in their supplied
+frame when preparing the four-channel command. The animated head's display
+angles no longer rotate the body rates a second time. That extra rotation
+could mix axes even though no head orientation had been measured.
 
-The existing Windows UI smoke test now covers 24 native menu-item clicks
-across the Forza, Flight Sim and controller menus, repeated opens/dismissals,
-and menu disposal when the form closes. It writes `menu-lifecycle.txt` beside
-the UI evidence. Passing CI establishes that tested menu path; it does not
-establish an actual Ally run. A fresh on-device check of both
-game menus, repeated opens and source selection is still pending for v1.2.2.
-The physical controller, game telemetry and board-output checks described
-below remain separate from the menu regression result.
+This build has no physical head-tracker input. Its **aligned-head fallback**
+assumes the head frame is aligned with the simulator's body frame. The head
+animation is a display preview, not a measured head pose or an additional
+input to the command matrix.
+
+The four-channel matrix follows the **December 2025 PRD** convention, in
+channel order A, B, C, D:
+
+```text
+A = -P + 1.5 Q - R
+B = -P - 1.5 Q + R
+C =  P - 1.5 Q - R
+D =  P + 1.5 Q + R
+```
+
+The **1.5× relative pitch gain** is retained. With the head aligned, a
+full-scale pure pitch command reaches the selected nominal maximum; a
+full-scale pure roll or yaw command reaches two-thirds of that maximum.
+Combined-axis commands use one shared limiter to preserve the axis ratios
+while keeping channel commands within the selected nominal limit. These are
+host-model amplitudes, conditional on the stated aligned-head/body-axis
+convention; delivered current is not measured.
+
+The host applies balanced byte quantization after this matrix and limiter.
+Legacy examples with swapped A/B channels or a different
+axis convention are not the mapping reference for this build. This is a
+GUI mapping correction; the existing NRF v0.8.1 firmware is unchanged.
+
+The game-menu lifecycle fix from v1.2.2 is retained. Windows UI smoke checks
+exercise 24 native menu-item clicks, repeated opens/dismissals and disposal
+when the form closes; `menu-lifecycle.txt` records that regression check.
+Passing these checks does not establish live game physics or board output.
 
 ## Install on a Windows Steam Deck or ROG Ally
 
@@ -127,6 +151,41 @@ installation, game launch and end-to-end board operation still require a
 check on the target Windows device; packaged DLL presence is not proof of
 a successful simulator connection.
 
+## Telemetry capture without opening USB
+
+The `--capture-telemetry` command records either the Forza or Flight Simulator
+feed to CSV for inspection. It does not open a COM/USB transport, arm output,
+or send device packets. The current test setup has no connected NRF board.
+Capture previews use the default **0.50 mA nominal limit**, recorded in the
+summary; they do not inherit another GUI window's slider setting.
+
+```powershell
+$capture = Start-Process -FilePath '.\VestibularJoystickSim.exe' `
+  -ArgumentList '--capture-telemetry forza --seconds 30 --out forza-capture.csv' `
+  -Wait -PassThru
+$capture.ExitCode
+```
+
+Replace `forza` with `msfs` to capture the Flight Simulator feed, using a
+separate output filename. Run the relevant game locally and enter active
+driving or flight for live motion samples. A stopped, paused or unavailable
+game can yield no fresh motion. Rows with `fresh=false` can retain the last
+raw sample; inspect `latest_sample_age_ms` and the freshness flag before using
+those values. A capture process completing is not proof
+that useful game telemetry arrived. A normal quiet capture exits with code 0.
+If another GUI or telemetry process prevents the Forza ports from binding,
+the capture exits with code 4 and records the error in its summary.
+
+Capture rows describe received telemetry and the **PREVIEW** command derived
+from it. Matrix values and channel bytes in a capture are modeled host
+commands, not actual transmissions, measured currents or delivered waveforms.
+Capture diagnostics distinguish preview data from serial port/packet counts;
+USB-open and transmitted-packet counts must remain zero in this mode. The
+companion `<output.csv>.summary.json` records total/fresh rows,
+`usb_open_count`, `actual_packets_sent`, `serial_connected`, `armed`, and any
+capture error. A successful non-actuating capture reports both counts as 0,
+with `serial_connected=false` and `armed=false`.
+
 ## Firmware compatibility
 
 This GUI targets the existing **vmocion-classic-firmware v0.8.1** release,
@@ -157,8 +216,10 @@ probe is sent during the Classic session.
 records the exact source commit and Windows workflow run. The Windows build
 runs packet, motion-transform, telemetry parser, calibration and deterministic
 serial sender tests, controller API binding and synthetic left-stick cases,
-including the Forza UDP loopback check. UI smoke checks
-render the handheld layout without opening a serial device.
+including the Forza UDP loopback check. UI smoke checks render the handheld
+layout without opening a serial device. A separate two-second quiet Forza
+capture check verifies CSV/summary consistency, zero fresh game samples and
+zero USB opens/transmitted packets; it does not stand in for live driving.
 
 These checks establish source/build behavior and simulated transport behavior.
 They do not establish installation on Tyler's board, sustained Windows USB

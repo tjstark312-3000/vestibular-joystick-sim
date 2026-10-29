@@ -30,7 +30,11 @@ namespace VestibularJoystickSim
                  p + pitch + r
             };
             double peak = Peak(currents);
-            double denominator = Math.Max(maxRate / inputScale, peak);
+            // December 2025 PRD relative gains, also used by NRF AXES:
+            // pitch is 1.5 times roll/yaw below the shared output limiter.
+            // A full-scale pure pitch reaches limit; pure roll/yaw reach 2/3.
+            // Keep K constant until the mixed vector needs limiting.
+            double denominator = Math.Max(1.5 * (maxRate / inputScale), peak);
             if (denominator == 0.0) return new double[4];
             // One scale retains the zero-sum matrix and axis ratios. Independent
             // clipping would introduce common mode, subsequently removed by NRF.
@@ -123,16 +127,29 @@ namespace VestibularJoystickSim
 
         public static bool SelfTest()
         {
-            if (!Equals(Encode(Mix(1.0, 0.0, 0.0, 1.0, 0.5)), 95, 95, 161, 161) ||
-                !Equals(Encode(Mix(-1.0, 0.0, 0.0, 1.0, 0.5)), 161, 161, 95, 95) ||
-                !Equals(Encode(Mix(1.0, 0.0, 0.0, 1.0, 1.5)), 28, 28, 228, 228) ||
+            if (!Equals(Encode(Mix(1.0, 0.0, 0.0, 1.0, 0.5)), 106, 106, 150, 150) ||
+                !Equals(Encode(Mix(-1.0, 0.0, 0.0, 1.0, 0.5)), 150, 150, 106, 106) ||
+                !Equals(Encode(Mix(1.0, 0.0, 0.0, 1.0, 1.5)), 62, 62, 194, 194) ||
                 !Equals(Encode(Mix(0.0, 1.0, 0.0, 1.0, 1.5)), 228, 28, 28, 228) ||
-                !Equals(Encode(Mix(0.0, 0.0, 1.0, 1.0, 1.5)), 28, 228, 28, 228) ||
+                !Equals(Encode(Mix(0.0, 0.0, 1.0, 1.0, 1.5)), 62, 194, 62, 194) ||
                 !Equals(Encode(Mix(0.0, 0.0, 0.0, 1.0, 1.5)), 128, 128, 128, 128) ||
                 !Equals(Encode(new double[] { 0.5, 0.5, 0.5, 0.5 }), 128, 128, 128, 128) ||
                 !Equals(Encode(new double[] { double.NaN, 0.0, 0.0, 0.0 }), 128, 128, 128, 128) ||
                 !Equals(Encode(Mix(double.PositiveInfinity, 0.0, 0.0, 1.0, 0.5)), 128, 128, 128, 128))
                 return false;
+
+            // Independent PRD/NRF gain contract: the pitch coefficient must
+            // remain 1.5x the roll/yaw coefficient before vector saturation.
+            // Test the floating point mix before byte quantization.
+            double[] lowRoll = Mix(0.3, 0.0, 0.0, 1.0, 1.5);
+            double[] lowPitch = Mix(0.0, 0.3, 0.0, 1.0, 1.5);
+            double[] lowYaw = Mix(0.0, 0.0, 0.3, 1.0, 1.5);
+            double[] combination = Mix(0.2, -0.1, 0.3, 1.0, 1.5);
+            double[] expectedCombination = new double[] { -0.65, 0.25, 0.05, 0.35 };
+            if (Math.Abs(lowPitch[0] + 1.5 * lowRoll[0]) > 1e-12 ||
+                Math.Abs(lowYaw[0] - lowRoll[0]) > 1e-12) return false;
+            for (int i = 0; i < 4; ++i)
+                if (Math.Abs(combination[i] - expectedCombination[i]) > 1e-12) return false;
 
             double[] axes = new double[] { -2.0, -1.0, -0.75, -0.25, 0.0, 0.25, 0.75, 1.0, 2.0 };
             double[] limits = new double[] { -1.0, 0.0, 0.01, 0.015, 0.1, 0.5, 1.0, 1.5, 2.5 };

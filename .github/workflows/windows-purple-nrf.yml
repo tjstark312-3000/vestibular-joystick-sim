@@ -28,10 +28,64 @@ jobs:
           $test = Start-Process -FilePath $exe -ArgumentList '--ui-smoke-test', $screenshots -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw "UI smoke test failed: $($test.ExitCode)" }
 
+      - name: Verify telemetry capture keeps USB closed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe'
+          $captureDir = Join-Path $PWD 'outputs\capture-smoke'
+          New-Item -ItemType Directory -Force -Path $captureDir | Out-Null
+          $csv = Join-Path $captureDir 'forza-quiet.csv'
+          $capture = Start-Process -FilePath $exe -ArgumentList '--capture-telemetry', 'forza', '--seconds', '2', '--out', $csv -PassThru
+          if (-not $capture.WaitForExit(20000)) {
+            $capture.Kill()
+            throw 'Telemetry capture did not finish within 20 seconds.'
+          }
+          if ($capture.ExitCode -ne 0) { throw "Telemetry capture failed: $($capture.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $csv)) { throw 'Capture CSV was not created.' }
+          $summary = Get-Content -LiteralPath "$csv.summary.json" -Raw | ConvertFrom-Json
+          if ($summary.scope -ne 'shadow_telemetry_preview_no_usb' -or $summary.source -ne 'forza') {
+            throw 'Unexpected capture mode or source.'
+          }
+          if ($summary.rows -le 0 -or $summary.fresh_rows -ne 0) {
+            throw 'Quiet capture should contain samples and zero fresh game samples.'
+          }
+          if ($summary.usb_open_count -ne 0 -or $summary.actual_packets_sent -ne 0 -or
+              $summary.serial_connected -ne $false -or $summary.armed -ne $false -or $null -ne $summary.error) {
+            throw 'Non-actuating capture invariants failed.'
+          }
+          $rows = @(Import-Csv -LiteralPath $csv)
+          if ($rows.Count -ne $summary.rows) { throw 'CSV row count does not match capture summary.' }
+          $headers = $rows[0].PSObject.Properties.Name
+          $required = @('utc', 'native_timestamp_ms', 'raw_prefix_hex',
+            'body_p_rad_s', 'body_q_rad_s', 'body_r_rad_s',
+            'aligned_command_p_rad_s', 'aligned_command_q_rad_s', 'aligned_command_r_rad_s',
+            'nominal_preview_a_mA', 'nominal_preview_b_mA', 'nominal_preview_c_mA', 'nominal_preview_d_mA',
+            'preview_byte_a', 'preview_byte_b', 'preview_byte_c', 'preview_byte_d',
+            'preview_packet_hex', 'actual_packets_sent', 'serial_connected', 'armed')
+          foreach ($column in $required) {
+            if ($column -notin $headers) { throw "Capture CSV is missing column: $column" }
+          }
+          foreach ($row in $rows) {
+            if ($row.fresh -ne 'false' -or $row.actual_packets_sent -ne '0' -or
+                $row.serial_connected -ne 'false' -or $row.armed -ne 'false') {
+              throw 'A quiet capture row reports fresh data or an active output path.'
+            }
+            if ($row.preview_byte_a -ne '128' -or $row.preview_byte_b -ne '128' -or
+                $row.preview_byte_c -ne '128' -or $row.preview_byte_d -ne '128' -or
+                $row.preview_packet_hex -ne 'AA-05-0A-80-80-80-80-0A-55') {
+              throw 'A quiet capture row must contain an exact neutral packet preview.'
+            }
+          }
+          Get-Content -LiteralPath "$csv.summary.json"
+          $validation = 'PASS quiet Forza capture: CSV schema and row count checked, exact neutral packet previews, no live game samples, USB opens=0, transmitted packets=0, disconnected and disarmed.'
+          $validation | Set-Content -Encoding utf8 (Join-Path $captureDir 'validation.txt')
+          Write-Host $validation
+
       - name: Package executable, runtime dependency and instructions
         shell: pwsh
         run: |
-          $name = 'VFORCE-Purple-NRF-v1.2.2-2026.10.29'
+          $name = 'VFORCE-Purple-NRF-v1.2.3-2026.10.29'
           $package = Join-Path $PWD "outputs\$name"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
@@ -49,16 +103,24 @@ jobs:
       - name: Upload Windows download
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.2-2026.10.29
+          name: VFORCE-Purple-NRF-v1.2.3-2026.10.29
           if-no-files-found: error
           path: |
-            outputs/VFORCE-Purple-NRF-v1.2.2-2026.10.29.zip
-            outputs/VFORCE-Purple-NRF-v1.2.2-2026.10.29/
+            outputs/VFORCE-Purple-NRF-v1.2.3-2026.10.29.zip
+            outputs/VFORCE-Purple-NRF-v1.2.3-2026.10.29/
 
       - name: Upload UI verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.2-2026.10.29-UI-check
+          name: VFORCE-Purple-NRF-v1.2.3-2026.10.29-UI-check
           if-no-files-found: warn
           path: outputs/ui-smoke/
+
+      - name: Upload non-actuating capture verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VFORCE-Purple-NRF-v1.2.3-2026.10.29-Capture-check
+          if-no-files-found: warn
+          path: outputs/capture-smoke/
