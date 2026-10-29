@@ -1,9 +1,26 @@
-# VFORCE Purple GUI — NRF edition 2026.10.27
+# VFORCE Purple GUI — NRF v1.2.2 (2026.10.29)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
+
+## v1.2.2 game-menu hotfix
+
+This GUI-only hotfix addresses the `ObjectDisposedException` involving
+`ContextMenuStrip` observed when opening the Forza or Flight Sim game menu
+on the ASUS ROG Ally. The menu lifecycle is corrected so repeated game-menu
+opens and selections do not use a disposed menu. Left Cal, Right Cal, the
+controller selector and the NRF v0.8.1 protocol remain part of this GUI.
+
+The existing Windows UI smoke test now covers 24 native menu-item clicks
+across the Forza, Flight Sim and controller menus, repeated opens/dismissals,
+and menu disposal when the form closes. It writes `menu-lifecycle.txt` beside
+the UI evidence. Passing CI establishes that tested menu path; it does not
+establish an actual Ally run. A fresh on-device check of both
+game menus, repeated opens and source selection is still pending for v1.2.2.
+The physical controller, game telemetry and board-output checks described
+below remain separate from the menu regression result.
 
 ## Install on a Windows Steam Deck or ROG Ally
 

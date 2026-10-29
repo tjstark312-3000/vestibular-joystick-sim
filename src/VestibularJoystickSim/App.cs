@@ -16,8 +16,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.1.0")]
-[assembly: AssemblyFileVersion("1.2.1.0")]
+[assembly: AssemblyVersion("1.2.2.0")]
+[assembly: AssemblyFileVersion("1.2.2.0")]
 
 namespace VestibularJoystickSim
 {
@@ -127,6 +127,10 @@ namespace VestibularJoystickSim
         private readonly bool offlineMode;
         private Control smokeSurface;
         private readonly Button controllerButton;
+        private readonly System.ComponentModel.IContainer menuComponents = new System.ComponentModel.Container();
+        private ContextMenuStrip controllerMenu, forzaMenu, msfsMenu;
+        private int offlineLaunchRequests;
+        private string offlineLaunchTarget;
         private readonly Button refreshButton;
         private readonly Button msfsLaunchButton;
         private readonly Button forzaLaunchButton;
@@ -644,6 +648,7 @@ namespace VestibularJoystickSim
 
         public static int UiSmokeTest(string directory)
         {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             Directory.CreateDirectory(directory);
             try
             {
@@ -704,7 +709,8 @@ namespace VestibularJoystickSim
                     form.forzaInput.Dispose();
                     form.toolTip.Dispose();
                 }
-                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                RunMenuLifecycleSmoke(directory);
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: game/controller native menu-click lifecycle and repeated reopen; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
                 return 0;
             }
             catch (Exception ex)
@@ -712,6 +718,110 @@ namespace VestibularJoystickSim
                 File.WriteAllText(Path.Combine(directory, "result.txt"), ex.ToString());
                 return 3;
             }
+        }
+
+        [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+        private static extern IntPtr SendMenuTestMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+        private static void SmokeClickMenuItem(ContextMenuStrip menu, int index)
+        {
+            SmokeRequire(menu.Visible && !menu.IsDisposed, "Menu did not open");
+            ToolStripItem item = menu.Items[index];
+            SmokeRequire(item.Enabled && item.Available, "Menu item is unavailable: " + item.Text);
+            int clicked = 0, closed = 0;
+            EventHandler clickHandler = delegate { clicked++; };
+            ToolStripDropDownClosedEventHandler closeHandler = delegate { closed++; };
+            item.Click += clickHandler;
+            menu.Closed += closeHandler;
+            try
+            {
+                // Exercise WinForms' actual mouse-up/item-click/close dispatch.
+                // ToolStripItem.PerformClick alone misses the dropdown lifecycle
+                // that used the menu after its Closed handler had disposed it.
+                Rectangle bounds = item.Bounds;
+                int x = bounds.Left + bounds.Width / 2;
+                int y = bounds.Top + bounds.Height / 2;
+                IntPtr location = new IntPtr((y << 16) | (x & 0xffff));
+                SendMenuTestMessage(menu.Handle, 0x0200, IntPtr.Zero, location); // WM_MOUSEMOVE
+                SendMenuTestMessage(menu.Handle, 0x0201, new IntPtr(1), location); // WM_LBUTTONDOWN
+                SendMenuTestMessage(menu.Handle, 0x0202, IntPtr.Zero, location); // WM_LBUTTONUP
+                Application.DoEvents();
+                SmokeRequire(clicked == 1 && closed == 1, "Native menu click/close was not dispatched exactly once: " + item.Text);
+                SmokeRequire(!menu.Visible && !menu.IsDisposed && !item.IsDisposed,
+                    "Dropdown was disposed during click dispatch: " + item.Text);
+            }
+            finally
+            {
+                item.Click -= clickHandler;
+                menu.Closed -= closeHandler;
+            }
+        }
+
+        private static void RunMenuLifecycleSmoke(string directory)
+        {
+            string report = Path.Combine(directory, "menu-lifecycle.txt");
+            File.WriteAllText(report, "Device-free native WinForms menu-click regression; output remains disarmed and external launch is suppressed.\r\n");
+            using (MainForm form = new MainForm(true))
+            {
+                form.Show();
+                Application.DoEvents();
+                ContextMenuStrip forza = form.GetGameMenu(GameKind.Forza);
+                ContextMenuStrip msfs = form.GetGameMenu(GameKind.Msfs);
+                ContextMenuStrip controller = form.GetControllerMenu();
+                GameKind[] games = new GameKind[] { GameKind.Forza, GameKind.Msfs };
+                for (int round = 0; round < 2; round++)
+                {
+                    foreach (GameKind game in games)
+                    {
+                        ContextMenuStrip menu = form.GetGameMenu(game);
+                        for (int i = 0; i < menu.Items.Count; i++)
+                        {
+                            int launchesBefore = form.offlineLaunchRequests;
+                            Button button = game == GameKind.Forza ? form.forzaLaunchButton : form.msfsLaunchButton;
+                            button.PerformClick(); // Calls the same LaunchGame method as a user click.
+                            Application.DoEvents();
+                            SmokeRequire(object.ReferenceEquals(menu, form.GetGameMenu(game)), "Game menu was recreated");
+                            SmokeClickMenuItem(menu, i);
+                            SmokeRequire(form.useForzaPhysics == (game == GameKind.Forza) &&
+                                form.useMsfsPhysics == (game == GameKind.Msfs) && !form.armed && form.calibrationDirection == 0,
+                                "Menu click failed source selection or changed safe output state");
+                            string expected = null;
+                            if (game == GameKind.Forza && i == 1) expected = "steam://rungameid/1551360";
+                            else if (game == GameKind.Msfs && i == 1) expected = "steam://rungameid/1250410";
+                            else if (game == GameKind.Msfs && i == 2) expected = "steam://rungameid/2537590";
+                            else if (i > 0) expected = "shell:AppsFolder\\" + (game == GameKind.Forza ?
+                                "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5" : "Microsoft.FlightSimulator_8wekyb3d8bbwe!App");
+                            SmokeRequire(form.offlineLaunchRequests == launchesBefore + (expected == null ? 0 : 1) &&
+                                (expected == null || form.offlineLaunchTarget == expected), "Wrong game launch route");
+                            File.AppendAllText(report, "PASS round " + round + " " + game + " item " + i + " " + menu.Items[i].Text + "\r\n");
+                        }
+                    }
+                    for (int i = 0; i < controller.Items.Count; i++)
+                    {
+                        form.controllerButton.PerformClick();
+                        Application.DoEvents();
+                        SmokeClickMenuItem(controller, i);
+                        SmokeRequire(form.physicalInput.SelectedXInputIndex == i - 1 && !form.armed && form.calibrationDirection == 0,
+                            "Controller menu did not select the exact slot safely");
+                        File.AppendAllText(report, "PASS round " + round + " controller item " + i + "\r\n");
+                    }
+                    form.forzaLaunchButton.PerformClick();
+                    Application.DoEvents();
+                    forza.Close(ToolStripDropDownCloseReason.AppClicked);
+                    SmokeRequire(!forza.IsDisposed, "Dismissed menu was disposed");
+                }
+                form.Close();
+                form.Dispose();
+                SmokeRequire(forza.IsDisposed && msfs.IsDisposed && controller.IsDisposed,
+                    "Form did not dispose its owned dropdown menus");
+                File.AppendAllText(report, "PASS all 24 native menu item clicks, repeated reopen/dismiss and form-owned disposal. No games launched; no USB transport opened.\r\n");
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) menuComponents.Dispose();
+            base.Dispose(disposing);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -954,17 +1064,22 @@ namespace VestibularJoystickSim
             UpdateUi();
         }
 
-        private void ShowControllerMenu(object sender, EventArgs e)
+        private ContextMenuStrip GetControllerMenu()
         {
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add("Auto - use active left stick", null, delegate { SelectController(-1); });
+            if (controllerMenu != null) return controllerMenu;
+            controllerMenu = new ContextMenuStrip(menuComponents);
+            controllerMenu.Items.Add("Auto - use active left stick", null, delegate { SelectController(-1); });
             for (int i = 0; i < 4; i++)
             {
                 int index = i;
-                menu.Items.Add("XInput " + (i + 1).ToString(), null, delegate { SelectController(index); });
+                controllerMenu.Items.Add("XInput " + (i + 1).ToString(), null, delegate { SelectController(index); });
             }
-            menu.Closed += delegate { menu.Dispose(); };
-            menu.Show(controllerButton, new Point(0, controllerButton.Height));
+            return controllerMenu;
+        }
+
+        private void ShowControllerMenu(object sender, EventArgs e)
+        {
+            GetControllerMenu().Show(controllerButton, new Point(0, controllerButton.Height));
         }
 
         private void UpdatePhysicalStickInput()
@@ -1455,9 +1570,11 @@ namespace VestibularJoystickSim
             UpdateUi();
         }
 
-        private void LaunchGame(GameKind game)
+        private ContextMenuStrip GetGameMenu(GameKind game)
         {
-            ContextMenuStrip menu = new ContextMenuStrip();
+            ContextMenuStrip existing = game == GameKind.Forza ? forzaMenu : msfsMenu;
+            if (existing != null) return existing;
+            ContextMenuStrip menu = new ContextMenuStrip(menuComponents);
             menu.Items.Add("Use telemetry from running game", null, delegate { SelectGame(game); });
             if (game == GameKind.Forza)
                 menu.Items.Add("Launch Forza Horizon 5 - Steam", null, delegate { OpenGame(game, "steam://rungameid/1551360"); });
@@ -1470,14 +1587,29 @@ namespace VestibularJoystickSim
                 string appId = game == GameKind.Forza ? "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5" : "Microsoft.FlightSimulator_8wekyb3d8bbwe!App";
                 OpenGame(game, "shell:AppsFolder\\" + appId);
             });
-            menu.Closed += delegate { menu.Dispose(); };
+            // WinForms still uses this dropdown after its Closed event while
+            // dispatching an item click. Keep it alive for the form's lifetime.
+            if (game == GameKind.Forza) forzaMenu = menu;
+            else msfsMenu = menu;
+            return menu;
+        }
+
+        private void LaunchGame(GameKind game)
+        {
             Button anchor = game == GameKind.Forza ? forzaLaunchButton : msfsLaunchButton;
-            menu.Show(anchor, new Point(0, anchor.Height));
+            GetGameMenu(game).Show(anchor, new Point(0, anchor.Height));
         }
 
         private void OpenGame(GameKind game, string target)
         {
             SelectGame(game);
+            if (offlineMode)
+            {
+                offlineLaunchRequests++;
+                offlineLaunchTarget = target;
+                SetStatus("Offline menu test - external launch suppressed");
+                return;
+            }
             try
             {
                 if (target.StartsWith("shell:", StringComparison.Ordinal))
