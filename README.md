@@ -1,11 +1,74 @@
-# VFORCE Purple GUI — NRF v1.2.4 (2026.10.29)
+# VFORCE Purple GUI — NRF v1.2.5 (2026.10.29)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
 
-## v1.2.4 capture listener recovery
+## v1.2.5 mapping selected from the Packet Definition PDF
+
+The user selected the **Representative Values to Outputs Mapping Table** on
+pages 4-5 of `Vmocion Hardware Technical Document - Packet Definition.pdf`
+as the direction-mapping authority. Reference SHA-256:
+`26f9be766b207fcc2ac6cfdf7782939f2d342760d6fc8a5aceac02c9c4f7e997`.
+This replaces the December PRD/Python matrix used in v1.2.4.
+
+Application command conventions are **+P = right roll**, **+Q = front pitch**,
+and **+R = right yaw**, in channel A/B/C/D (DAC 1/2/3/4) order:
+
+```text
+A =      Q + R
+B = -P - Q - R
+C =      Q - R
+D =  P - Q + R
+```
+
+The six pure-axis endpoints match the PDF table:
+
+```text
+                A   B   C   D
+Right roll      0  -1   0  +1
+Left roll       0  +1   0  -1
+Front pitch    +1  -1  +1  -1
+Back pitch     -1  +1  -1  +1
+Right yaw      +1  -1  -1  +1
+Left yaw       -1  +1  +1  -1
+```
+
+Each full-scale pure axis reaches the selected nominal command limit. The
+PRD's 1.5x pitch weighting has been removed. Between the representative
+endpoints, the GUI uses linear superposition with a single shared peak
+limiter; this interpolation policy is an implementation choice, not an
+additional mixed-axis table supplied by the PDF. The existing default
+**0.50 mA**, hard ceiling **1.50 mA**, balanced downward byte quantization,
+neutral, watchdog and explicit-rearm behavior are retained.
+
+**Left Cal now requests negative P; Right Cal requests positive P.** Thus
+left roll leaves A/C neutral with B positive and D negative, and right roll
+reverses B/D. Their five-second timing and Stop Cal/Pause disarm are retained.
+
+The PDF diagram places A at the left temple, B behind the left ear, C at the
+right temple and D behind the right ear. **This is the selected reference
+order, not a continuity test of the physical cable.** Its A/B placement
+differs from the previous PRD/Python convention; check the actual harness
+against the selected drawing before any electrical bench test.
+
+Forza and MSFS native rate signs are preserved from v1.2.4. The application
+direction convention above has software tests, but native positive rates
+have not been correlated with actual right-roll/front-pitch/right-yaw game
+maneuvers on the Ally. Physical game direction, joystick movement, USB receipt
+and measured output remain separate live acceptance checks.
+
+The PDF also contains a different `00 ... FF` float32 voltage protocol and
+conflicting baud-rate statements. **This release adopts its direction table
+only.** It does not send those voltage commands or adopt its voltage values.
+The unchanged NRF v0.8.1 Classic receiver accepts the GUI's already-mixed
+A/B/C/D bytes and does not apply the firmware ASCII `AXES` matrix again.
+Consequently no firmware change or flash is needed for this GUI path. The
+firmware's optional ASCII `AXES` mode retains its older PRD matrix and is not
+used by this release; it must not be substituted for the selected GUI path.
+
+## Retained v1.2.4 capture listener recovery
 
 This GUI-only update corrects a capture failure exposed by the external
 synthetic Forza UDP test. Discarding a socket backlog can temporarily close
@@ -13,13 +76,13 @@ the telemetry listeners; capture must allow the normal listener restart
 instead of reporting that transient reset as a permanent port-bind failure.
 A real failure to bind both Forza ports still reports an error.
 
-The aligned-head mapping, conservative nominal scaling and no-USB capture
-mode introduced in v1.2.3 are retained. The v1.2.3 distribution remains a
-separate version; use the complete v1.2.4 package for this capture fix.
+The aligned-head frame assumption and no-USB capture mode introduced in
+v1.2.3 are retained. Use the complete v1.2.5 package for the current mapping
+and capture fix.
 Synthetic test packets are clearly labeled as fixtures and do not establish
 telemetry from a running game or measured board output.
 
-## v1.2.3 aligned-head mapping and telemetry capture
+## Aligned-head assumption and telemetry capture
 
 Game telemetry already supplies body-frame rotation rates: **P = roll**,
 **Q = pitch**, and **R = yaw**. This update keeps those rates in their supplied
@@ -32,28 +95,9 @@ assumes the head frame is aligned with the simulator's body frame. The head
 animation is a display preview, not a measured head pose or an additional
 input to the command matrix.
 
-The four-channel matrix follows the **December 2025 PRD** convention, in
-channel order A, B, C, D:
-
-```text
-A = -P + 1.5 Q - R
-B = -P - 1.5 Q + R
-C =  P - 1.5 Q - R
-D =  P + 1.5 Q + R
-```
-
-The **1.5× relative pitch gain** is retained. With the head aligned, a
-full-scale pure pitch command reaches the selected nominal maximum; a
-full-scale pure roll or yaw command reaches two-thirds of that maximum.
-Combined-axis commands use one shared limiter to preserve the axis ratios
-while keeping channel commands within the selected nominal limit. These are
-host-model amplitudes, conditional on the stated aligned-head/body-axis
-convention; delivered current is not measured.
-
-The host applies balanced byte quantization after this matrix and limiter.
-Legacy examples with swapped A/B channels or a different
-axis convention are not the mapping reference for this build. This is a
-GUI mapping correction; the existing NRF v0.8.1 firmware is unchanged.
+The host applies the selected PDF direction matrix and balanced byte
+quantization in this aligned frame. These are host-model amplitudes;
+delivered current is not measured and actual head movement is not tracked.
 
 The game-menu lifecycle fix from v1.2.2 is retained. Windows UI smoke checks
 exercise 24 native menu-item clicks, repeated opens/dismissals and disposal
@@ -195,7 +239,9 @@ from it. Matrix values and channel bytes in a capture are modeled host
 commands, not actual transmissions, measured currents or delivered waveforms.
 Capture diagnostics distinguish preview data from serial port/packet counts;
 USB-open and transmitted-packet counts must remain zero in this mode. The
-companion `<output.csv>.summary.json` records total/fresh rows,
+companion `<output.csv>.summary.json` records the selected mapping and
+application axis convention, flags physical game signs as unverified, and
+records total/fresh rows,
 `usb_open_count`, `actual_packets_sent`, `serial_connected`, `armed`, and any
 capture error. A successful non-actuating capture reports both counts as 0,
 with `serial_connected=false` and `armed=false`.
@@ -231,9 +277,16 @@ records the exact source commit and Windows workflow run. The Windows build
 runs packet, motion-transform, telemetry parser, calibration and deterministic
 serial sender tests, controller API binding and synthetic left-stick cases,
 including the Forza UDP loopback check. UI smoke checks render the handheld
-layout without opening a serial device. A separate two-second quiet Forza
+layout without opening a serial device. All six PDF directions are checked
+at default and maximum nominal limits, including exact neutral A/C channels
+for roll. GUI command-path tests check signed game/joystick vectors at varied
+display attitudes, plus Left Cal/Right Cal through mock transport.
+A separate two-second quiet Forza
 capture check verifies CSV/summary consistency, zero fresh game samples and
 zero USB opens/transmitted packets; it does not stand in for live driving.
+The same Windows build also runs fresh synthetic UDP fixtures against its
+newly built EXE, checking the PDF matrix, full packet checksum, source/run/hash
+provenance and no-USB invariants before creating the package.
 
 These checks establish source/build behavior and simulated transport behavior.
 They do not establish installation on Tyler's board, sustained Windows USB

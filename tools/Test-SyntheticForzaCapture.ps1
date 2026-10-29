@@ -1,17 +1,23 @@
 param(
     [Parameter(Mandatory = $true)][string] $ExecutablePath,
-    [Parameter(Mandatory = $true)][string] $OutputDirectory
+    [Parameter(Mandatory = $true)][string] $OutputDirectory,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[a-fA-F0-9]{64}$')][string] $ExpectedExeSha256,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[a-fA-F0-9]{40}$')][string] $ExpectedSourceCommit,
+    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9]+$')][string] $ExpectedBuildRunId
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedExeHash = '852e2b288190554ec5071fe8941486abb404a170c2b5f799744f460c27c35787'
-$expectedSource = 'bc170b8bd57e0dd8f728e26342d2ff4b877a440c'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $actualHash = (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualHash -ne $expectedExeHash) { throw 'This check must use the previously verified v1.2.4 EXE.' }
-$buildInfo = Get-Content -LiteralPath (Join-Path (Split-Path $ExecutablePath -Parent) 'BUILD-INFO.txt') -Raw
-if ($buildInfo -notmatch "source_commit=$expectedSource" -or $buildInfo -notmatch 'workflow_run=40947870045') {
-    throw 'Verified executable build provenance does not match.'
+if ($actualHash -ne $ExpectedExeSha256) { throw 'Synthetic capture must use the designated v1.2.5 EXE.' }
+if ([Diagnostics.FileVersionInfo]::GetVersionInfo($ExecutablePath).FileVersion.Trim() -ne '1.2.5.0') {
+    throw 'PDF direction-table validation requires application version 1.2.5.0.'
+}
+$buildInfo = @(Get-Content -LiteralPath (Join-Path (Split-Path $ExecutablePath -Parent) 'BUILD-INFO.txt'))
+if ($buildInfo -notcontains "source_commit=$ExpectedSourceCommit" -or
+    $buildInfo -notcontains "workflow_run=$ExpectedBuildRunId" -or
+    $buildInfo -notcontains 'firmware_modified=false') {
+    throw 'Designated executable build provenance does not match.'
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
@@ -40,10 +46,12 @@ function Put-Single([byte[]] $Packet, [int] $Offset, [single] $Value) {
     [BitConverter]::GetBytes($Value).CopyTo($Packet, $Offset)
 }
 
+# Independent packet-definition PDF oracle: A=Q+R, B=-P-Q-R, C=Q-R, D=P-Q+R.
+# Baseline maxRate (3.14/4), shared peak limiter, nominal limit0.5; pure0.3 ->12 steps.
 $fixtures = @(
-    @{ name = 'roll-positive'; x = 0.0; y = 0.0; z = 0.3; p = 0.3; q = 0.0; r = 0.0; bytes = @(120,120,136,136) },
-    @{ name = 'pitch-positive'; x = 0.3; y = 0.0; z = 0.0; p = 0.0; q = 0.3; r = 0.0; bytes = @(140,116,116,140) },
-    @{ name = 'yaw-positive'; x = 0.0; y = 0.3; z = 0.0; p = 0.0; q = 0.0; r = 0.3; bytes = @(120,136,120,136) }
+    @{ name = 'right-roll-positive'; x = 0.0; y = 0.0; z = 0.3; p = 0.3; q = 0.0; r = 0.0; bytes = @(128,116,128,140) },
+    @{ name = 'front-pitch-positive'; x = 0.3; y = 0.0; z = 0.0; p = 0.0; q = 0.3; r = 0.0; bytes = @(140,116,140,116) },
+    @{ name = 'right-yaw-positive'; x = 0.0; y = 0.3; z = 0.0; p = 0.0; q = 0.0; r = 0.3; bytes = @(140,116,116,140) }
 )
 $sent = [Collections.Generic.List[object]]::new()
 $sender = [Net.Sockets.UdpClient]::new()
@@ -119,6 +127,11 @@ Require ($summary.rows -eq $rows.Count -and $summary.fresh_rows -gt 0) 'Fresh ca
 Require ($summary.usb_open_count -eq 0 -and $summary.actual_packets_sent -eq 0 -and
     $summary.serial_connected -eq $false -and $summary.armed -eq $false -and $null -eq $summary.error) 'Capture violated no-USB/no-transmission invariants.'
 Require ($summary.head_frame -eq 'aligned_body_head_assumption_no_tracking') 'Head-frame assumption changed.'
+Require ($summary.matrix_reference -eq 'packet_definition_pdf_pages_4_5') 'Capture metadata does not identify the selected PDF table.'
+Require ($summary.command_axis_convention -eq 'P_positive_right_roll_Q_positive_front_pitch_R_positive_right_yaw') 'Capture metadata axis convention differs from the PDF fixture.'
+Require ($summary.physical_game_axis_signs_verified -eq $false) 'Capture metadata must keep physical game direction verification unconfirmed.'
+Require (CloseEnough ([double] $summary.nominal_limit_mA) 0.5) 'Unexpected nominal preview limit.'
+Require (CloseEnough ([double] $summary.matrix_gain_mA_per_rad_s) (0.5 / (3.14 / 4.0))) 'PDF matrix gain must use baseline maxRate without PRD pitch weighting.'
 
 $fresh = @($rows | Where-Object fresh -eq 'true')
 Require ($fresh.Count -eq $summary.fresh_rows) 'Fresh row count mismatches summary.'
@@ -128,6 +141,17 @@ $nonneutral = 0
 foreach ($row in $rows) {
     Require ($row.actual_packets_sent -eq '0' -and $row.serial_connected -eq 'false' -and $row.armed -eq 'false') 'A row reports active serial output.'
     $bytes = @('a','b','c','d' | ForEach-Object { [int] $row.('preview_byte_' + $_) })
+    $p = Number $row.slew_preview_p_rad_s
+    $q = Number $row.slew_preview_q_rad_s
+    $r = Number $row.slew_preview_r_rad_s
+    $raw = @(($q + $r), (-$p - $q - $r), ($q - $r), ($p - $q + $r))
+    $peak = ($raw | ForEach-Object { [Math]::Abs($_) } | Measure-Object -Maximum).Maximum
+    $gain = 0.5 / [Math]::Max((3.14 / 4.0), $peak)
+    $channel = 0
+    foreach ($letter in @('a','b','c','d')) {
+        Require (CloseEnough (Number $row.('nominal_preview_' + $letter + '_mA')) ($raw[$channel] * $gain)) 'Nominal preview differs from the independent PDF direction-table matrix.'
+        $channel++
+    }
     Require (($bytes | Measure-Object -Sum).Sum -eq 512) 'Preview channel bytes are not balanced around neutral.'
     Require (@($bytes | Where-Object { $_ -lt 28 -or $_ -gt 228 }).Count -eq 0) 'Preview byte is outside NRF Classic range.'
     if (@($bytes | Where-Object { $_ -ne 128 }).Count -gt 0) { $nonneutral++ }
@@ -180,8 +204,12 @@ $validation = [ordered]@{
     scope = $scope
     result = 'PASS'
     tested_executable_sha256 = $actualHash
-    tested_source_commit = $expectedSource
-    original_package_workflow_run = 40947870045
+    tested_source_commit = $ExpectedSourceCommit
+    original_package_workflow_run = [long] $ExpectedBuildRunId
+    mapping_reference = 'Packet-definition PDF direction table; P=right roll, Q=front pitch, R=right yaw in the application command convention'
+    physical_game_maneuver_signs_verified = $false
+    independent_matrix = @(@(0,1,1), @(-1,-1,-1), @(0,1,-1), @(1,-1,1))
+    normalization_baseline = 'maxRate; shared max(maxRate, peak(raw)) denominator'
     capture_seconds = 5
     sender_datagrams = $sequence
     timestamp_increment_ms = 25
@@ -197,6 +225,6 @@ $validation = [ordered]@{
     armed = $summary.armed
 }
 $validation | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'SYNTHETIC-validation.json')
-($scope + "`nPASS: fresh native/body axes, nonzero fixture attitude, signed pure-axis plateaus, balanced/checksummed preview packets, race-stop neutral, USB opens=0 and actual packets=0.") |
+($scope + "`nPASS: fresh native/body axes, nonzero fixture attitude, PDF-direction pure-axis plateaus, independent matrix, balanced/checksummed preview packets, race-stop neutral, USB opens=0 and actual packets=0.") |
     Set-Content -Encoding utf8 (Join-Path $OutputDirectory 'SYNTHETIC-validation.txt')
 Get-Content -LiteralPath (Join-Path $OutputDirectory 'SYNTHETIC-validation.json')

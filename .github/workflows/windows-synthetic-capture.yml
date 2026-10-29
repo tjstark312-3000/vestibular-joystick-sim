@@ -1,13 +1,20 @@
-name: SYNTHETIC Forza capture on verified v1.2.4
+name: SYNTHETIC PDF-direction capture on designated v1.2.5
 
 on:
-  push:
-    branches:
-      - codex/purple-nrf-calibration-2026-10-27
-    paths:
-      - .github/workflows/windows-synthetic-capture.yml
-      - tools/Test-SyntheticForzaCapture.ps1
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful v1.2.5 Windows build run to verify
+        required: true
+        type: string
+      source_commit:
+        description: Exact source commit from that package BUILD-INFO.txt
+        required: true
+        type: string
+      executable_sha256:
+        description: Verified v1.2.5 EXE SHA-256 from that package
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,25 +27,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download the already verified executable without rebuilding
+      - name: Download the designated v1.2.5 executable without rebuilding
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
-          gh run download 40947870045 --repo '${{ github.repository }}' `
-            --name 'VFORCE-Purple-NRF-v1.2.4-2026.10.29' --dir 'work\verified-v124'
+          if ($env:BUILD_RUN_ID -notmatch '^[0-9]+$') { throw 'Invalid build run ID.' }
+          gh run download $env:BUILD_RUN_ID --repo '${{ github.repository }}' `
+            --name 'VFORCE-Purple-NRF-v1.2.5-2026.10.29' --dir 'work\verified-v125'
 
       - name: Capture an external SYNTHETIC UDP fixture with USB closed
         shell: pwsh
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          EXPECTED_EXE_SHA256: ${{ inputs.executable_sha256 }}
         run: |
-          $exe = Join-Path $PWD 'work\verified-v124\VFORCE-Purple-NRF-v1.2.4-2026.10.29\VestibularJoystickSim.exe'
+          $exe = Join-Path $PWD 'work\verified-v125\VFORCE-Purple-NRF-v1.2.5-2026.10.29\VestibularJoystickSim.exe'
           .\tools\Test-SyntheticForzaCapture.ps1 -ExecutablePath $exe `
-            -OutputDirectory (Join-Path $PWD 'outputs\SYNTHETIC-forza-capture-v1.2.4')
+            -OutputDirectory (Join-Path $PWD 'outputs\SYNTHETIC-forza-capture-v1.2.5') `
+            -ExpectedExeSha256 $env:EXPECTED_EXE_SHA256 -ExpectedSourceCommit $env:SOURCE_COMMIT `
+            -ExpectedBuildRunId $env:BUILD_RUN_ID
 
       - name: Upload SYNTHETIC evidence, never live game data
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SYNTHETIC-Forza-capture-verified-v1.2.4
+          name: SYNTHETIC-Forza-PDF-direction-capture-v1.2.5
           if-no-files-found: error
-          path: outputs/SYNTHETIC-forza-capture-v1.2.4/
+          path: outputs/SYNTHETIC-forza-capture-v1.2.5/

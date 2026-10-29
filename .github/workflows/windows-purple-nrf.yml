@@ -82,18 +82,30 @@ jobs:
           $validation | Set-Content -Encoding utf8 (Join-Path $captureDir 'validation.txt')
           Write-Host $validation
 
+      - name: Validate fresh SYNTHETIC Forza capture against PDF directions
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $PWD 'outputs\vestibular-joystick-sim'
+          $exe = Join-Path $buildDir 'VestibularJoystickSim.exe'
+          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false" |
+            Set-Content -Encoding utf8 (Join-Path $buildDir 'BUILD-INFO.txt')
+          $expectedHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          .\tools\Test-SyntheticForzaCapture.ps1 -ExecutablePath $exe `
+            -OutputDirectory (Join-Path $PWD 'outputs\capture-smoke\SYNTHETIC') `
+            -ExpectedExeSha256 $expectedHash -ExpectedSourceCommit $env:GITHUB_SHA `
+            -ExpectedBuildRunId $env:GITHUB_RUN_ID
+
       - name: Package executable, runtime dependency and instructions
         shell: pwsh
         run: |
-          $name = 'VFORCE-Purple-NRF-v1.2.4-2026.10.29'
+          $name = 'VFORCE-Purple-NRF-v1.2.5-2026.10.29'
           $package = Join-Path $PWD "outputs\$name"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
           Copy-Item 'outputs\vestibular-joystick-sim\SimConnect.dll' $package
           Copy-Item README.md (Join-Path $package 'READ-ME-FIRST.md')
           Copy-Item 'outputs\vestibular-joystick-sim\self-test-results.txt' $package
-          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false" |
-            Set-Content -Encoding utf8 (Join-Path $package 'BUILD-INFO.txt')
+          Copy-Item 'outputs\vestibular-joystick-sim\BUILD-INFO.txt' $package
           Get-ChildItem -LiteralPath $package -File | Sort-Object Name | ForEach-Object {
             $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
             "$($hash.Hash.ToLowerInvariant())  $($_.Name)"
@@ -103,17 +115,17 @@ jobs:
       - name: Upload Windows download
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.4-2026.10.29
+          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29
           if-no-files-found: error
           path: |
-            outputs/VFORCE-Purple-NRF-v1.2.4-2026.10.29.zip
-            outputs/VFORCE-Purple-NRF-v1.2.4-2026.10.29/
+            outputs/VFORCE-Purple-NRF-v1.2.5-2026.10.29.zip
+            outputs/VFORCE-Purple-NRF-v1.2.5-2026.10.29/
 
       - name: Upload UI verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.4-2026.10.29-UI-check
+          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29-UI-check
           if-no-files-found: warn
           path: outputs/ui-smoke/
 
@@ -121,6 +133,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.4-2026.10.29-Capture-check
+          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29-Capture-check
           if-no-files-found: warn
           path: outputs/capture-smoke/

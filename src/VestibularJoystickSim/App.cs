@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.4.0")]
-[assembly: AssemblyFileVersion("1.2.4.0")]
+[assembly: AssemblyVersion("1.2.5.0")]
+[assembly: AssemblyFileVersion("1.2.5.0")]
 
 namespace VestibularJoystickSim
 {
@@ -601,11 +601,11 @@ namespace VestibularJoystickSim
                    Math.Abs(SlewRate(0, 1) - GvsMaxRamp) < 1e-12 &&
                    Math.Abs(SlewRate(0, -1) + GvsMaxRamp) < 1e-12 &&
                    CalibrationIntensity(0) == 0 && CalibrationIntensity(2.5) == 1 && CalibrationIntensity(5) == 0 &&
-                   PacketValuesEqual(JoystickToCommandedRates(0, 0, -1, 1), new double[] { -GvsMaxRate, 0, 0 }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(0, 0, -1, 1), new double[] { GvsMaxRate, 0, 0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.0, 1.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, 0.0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.5, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate * 0.5 }) &&
-                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1, 1.0), new double[] { GvsMaxRate, 0.0, 0.0 }) &&
+                   PacketValuesEqual(JoystickToCommandedRates(0.0, 0.0, 1, 1.0), new double[] { -GvsMaxRate, 0.0, 0.0 }) &&
                    PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 0.1, 0.2, 0.3, 0.0, 0.0, 0.0)), new double[] { 0.1, 0.2, 0.3 }) &&
                    PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Fresh("Forza", 2.0, -2.0, 2.0, 0.0, 0.0, 0.0)), new double[] { GvsMaxRate, -GvsMaxRate, GvsMaxRate }) &&
                    PacketValuesEqual(PhysicsMotionToCommandedRates(MotionSnapshot.Empty("MSFS off")), new double[] { 0.0, 0.0, 0.0 }) &&
@@ -746,7 +746,10 @@ namespace VestibularJoystickSim
                 "  \"forza_listening_ports\": " + listeningPorts.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"head_frame\": \"aligned_body_head_assumption_no_tracking\",\n" +
                 "  \"nominal_limit_mA\": " + CaptureNumber(DefaultCurrentPeakMilliamp) + ",\n" +
-                "  \"matrix_gain_mA_per_rad_s\": " + CaptureNumber(DefaultCurrentPeakMilliamp / (1.5 * GvsMaxRate)) + ",\n" +
+                "  \"matrix_reference\": " + CaptureJson(ClassicNrfProfile.MappingReference) + ",\n" +
+                "  \"command_axis_convention\": " + CaptureJson(ClassicNrfProfile.AxisConvention) + ",\n" +
+                "  \"physical_game_axis_signs_verified\": false,\n" +
+                "  \"matrix_gain_mA_per_rad_s\": " + CaptureNumber(DefaultCurrentPeakMilliamp / GvsMaxRate) + ",\n" +
                 "  \"matrix_limiter\": \"shared_peak_bound_then_balanced_integer_quantization\",\n" +
                 "  \"usb_open_count\": 0,\n  \"actual_packets_sent\": 0,\n  \"serial_connected\": false,\n  \"armed\": false,\n" +
                 "  \"note\": \"Packet and current columns are computed previews, never transmitted or measured; stale rows retain the last raw sample with fresh=false.\",\n" +
@@ -834,7 +837,7 @@ namespace VestibularJoystickSim
                     form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
                     form.SendVestibularOutput();
                     form.serialOutput.Pump();
-                    SmokeRequire(form.calibrationDirection == 1 && form.currentBytes[0] < 128 && form.currentBytes[2] > 128, "Left Cal did not produce left direction");
+                    SmokeRequire(form.calibrationDirection == 1 && form.currentBytes[0] == 128 && form.currentBytes[1] > 128 && form.currentBytes[2] == 128 && form.currentBytes[3] < 128, "Left Cal did not match PDF left-roll direction");
                     form.SaveSmokeFrame(directory, "purple-left-cal-mock");
                     form.stopCalButton.PerformClick();
                     SmokeRequire(!form.armed && form.calibrationDirection == 0, "Stop Cal did not disarm");
@@ -846,7 +849,7 @@ namespace VestibularJoystickSim
                     form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
                     form.SendVestibularOutput();
                     form.serialOutput.Pump();
-                    SmokeRequire(form.calibrationDirection == -1 && form.currentBytes[0] > 128 && form.currentBytes[2] < 128, "Right Cal did not produce right direction");
+                    SmokeRequire(form.calibrationDirection == -1 && form.currentBytes[0] == 128 && form.currentBytes[1] < 128 && form.currentBytes[2] == 128 && form.currentBytes[3] > 128, "Right Cal did not match PDF right-roll direction");
                     form.SaveSmokeFrame(directory, "purple-right-cal-mock");
                     form.PauseButtonClick(null, EventArgs.Empty);
                     SmokeRequire(!form.armed && form.calibrationDirection == 0, "Pause did not stop calibration");
@@ -880,6 +883,7 @@ namespace VestibularJoystickSim
         {
             string report = Path.Combine(directory, "aligned-frame-regression.txt");
             File.WriteAllText(report, "Device-free actual GUI command-path regression with mock transport; no physical output or head tracker.\r\n");
+            File.AppendAllText(report, "Mapping: Packet Definition PDF pages 4-5; application +P right roll, +Q front pitch, +R right yaw. Native game physical signs remain unverified.\r\n");
             double[][] attitudes = new double[][] {
                 new double[] { 0, 0, 0 }, new double[] { 28, 55, 65 }, new double[] { -28, -55, -65 }
             };
@@ -908,6 +912,7 @@ namespace VestibularJoystickSim
                     }
                     SmokeRequire(PacketValuesEqual(new double[] { pRate, qRate, rRate }, expected),
                         "Pure game axis acquired cross-axis motion from display attitude");
+                    SmokeRequire(IntValuesEqual(currentBytes, PdfDirectionPacket(axis, sign, 12)), "Game command did not match independent PDF direction vector");
                     if (baseline == null) baseline = (int[])currentBytes.Clone();
                     else SmokeRequire(IntValuesEqual(currentBytes, baseline), "Display attitude changed channel packet");
                     File.AppendAllText(report, "PASS " + game + " axis=" + axis + " sign=" + sign + " visual=" +
@@ -933,12 +938,22 @@ namespace VestibularJoystickSim
                 for (int tick = 0; tick < 32; tick++) UpdateVestibularOutput();
                 double[] expected = axis == 0 ? new double[] { 0, 0, sign * GvsMaxRate } : new double[] { 0, sign * GvsMaxRate, 0 };
                 SmokeRequire(PacketValuesEqual(new double[] { pRate, qRate, rRate }, expected), "Joystick yaw/pitch mapping changed with display attitude");
+                SmokeRequire(IntValuesEqual(currentBytes, PdfDirectionPacket(axis == 0 ? 2 : 1, sign, 33)), "Joystick command did not match independent PDF direction vector");
                 cases++;
             }
             serialOutput.Disarm();
             ResetCommandHistory();
             inputX = inputY = 0;
             File.AppendAllText(report, "PASS " + cases + " pure-axis game/joystick cases; body/head alignment is an explicit assumption.\r\n");
+        }
+
+        private static int[] PdfDirectionPacket(int axis, int sign, int magnitude)
+        {
+            // Independent table oracle, not the production Mix implementation.
+            int[][] table = new int[][] { new int[] { 0, -1, 0, 1 }, new int[] { 1, -1, 1, -1 }, new int[] { 1, -1, -1, 1 } };
+            int[] result = new int[4];
+            for (int channel = 0; channel < 4; channel++) result[channel] = 128 + table[axis][channel] * sign * magnitude;
+            return result;
         }
 
         [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
@@ -1948,6 +1963,9 @@ namespace VestibularJoystickSim
                 "Left stick: X " + inputX.ToString("0.000") + "  Y " + inputY.ToString("0.000") + "\r\n" +
                 "Game physics: " + (gameMotion.IsFresh ? gameMotion.Source + " live" : "waiting") + "\r\n" +
                 "Frame model: aligned body/head assumption; no head tracking input\r\n" +
+                "Mapping: Packet Definition PDF pages 4-5; A/B/C/D = DAC 1/2/3/4\r\n" +
+                "Command +P/+Q/+R: right roll / front pitch / right yaw\r\n" +
+                "Native game physical directions and electrode wiring require bench verification\r\n" +
                 "Game body P/Q/R (rad/s): " + gameMotion.P.ToString("0.000") + " / " + gameMotion.Q.ToString("0.000") + " / " + gameMotion.R.ToString("0.000") + "\r\n" +
                 "Display attitude does not change the output frame\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
@@ -2298,7 +2316,7 @@ namespace VestibularJoystickSim
             {
                 return new double[]
                 {
-                    calibratingDirection * GvsMaxRate * calibrationIntensity,
+                    -calibratingDirection * GvsMaxRate * calibrationIntensity,
                     0.0,
                     0.0
                 };
