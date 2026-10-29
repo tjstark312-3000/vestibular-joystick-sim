@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.3.0")]
-[assembly: AssemblyFileVersion("1.2.3.0")]
+[assembly: AssemblyVersion("1.2.4.0")]
+[assembly: AssemblyFileVersion("1.2.4.0")]
 
 namespace VestibularJoystickSim
 {
@@ -690,7 +690,7 @@ namespace VestibularJoystickSim
                             if (requested == "forza")
                             {
                                 listeningPorts = form.forzaInput.ListeningPortCount;
-                                if (listeningPorts == 0)
+                                if (form.forzaInput.HasBindFailure)
                                     throw new InvalidOperationException("Cannot bind Forza UDP 5300/5607. Close the existing VFORCE GUI and other telemetry receivers, then retry capture.");
                             }
                             MotionSnapshot observed = requested == "forza" ? form.forzaMotion : form.msfsMotion;

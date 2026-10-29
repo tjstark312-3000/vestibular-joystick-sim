@@ -111,10 +111,14 @@ namespace VestibularJoystickSim
         private bool started;
         private string status = "Forza waiting on localhost UDP 5300/5607";
         private long lastPollTicks;
+        private long pollBudgetTicks = Math.Max(1, Stopwatch.Frequency / 500);
 
         public ForzaUdpTelemetryInput() : this(PrimaryPort, SecondaryPort) { }
 
         public int ListeningPortCount { get { return clients.Count; } }
+        // ResetStatus deliberately closes old queues before the next poll binds
+        // again. Zero listeners during that reset is not a failed bind attempt.
+        public bool HasBindFailure { get { return started && clients.Count == 0; } }
 
         private ForzaUdpTelemetryInput(int primary, int secondary)
         {
@@ -133,7 +137,7 @@ namespace VestibularJoystickSim
             }
             lastPollTicks = now;
             EnsureStarted();
-            long deadline = now + Math.Max(1, Stopwatch.Frequency / 500); // 2 ms total.
+            long deadline = now + pollBudgetTicks; // 2 ms total in production.
             int packetBudget = MaxPacketsPerPoll;
             bool backlog = false;
             for (int i = 0; i < clients.Count; i++)
@@ -399,6 +403,41 @@ namespace VestibularJoystickSim
                 input.lastPollTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
                 if (input.Poll().IsFresh || input.clients.Count != 2) return false;
                 // Rebinding after the safety discard must still accept new traffic.
+                if (!WaitForLoopbackPacket(input, sender, packet, true)) return false;
+            }
+            return BacklogRecoverySelfTest();
+        }
+
+        private static bool BacklogRecoverySelfTest()
+        {
+            using (ForzaUdpTelemetryInput input = new ForzaUdpTelemetryInput(0, 0))
+            using (UdpClient sender = new UdpClient())
+            {
+                input.Poll();
+                if (input.clients.Count != 2 || input.HasBindFailure) return false;
+                int firstPort = ((IPEndPoint)input.clients[0].Client.LocalEndPoint).Port;
+                int secondPort = ((IPEndPoint)input.clients[1].Client.LocalEndPoint).Port;
+                using (ForzaUdpTelemetryInput blocked = new ForzaUdpTelemetryInput(firstPort, secondPort))
+                {
+                    if (blocked.Poll().IsFresh || !blocked.HasBindFailure || blocked.ListeningPortCount != 0)
+                        return false; // A real bind attempt against owned ports must still fail.
+                }
+                byte[] packet = new byte[MinimumSledPacketBytes];
+                WriteInt32(packet, 0, 1);
+                WriteSingle(packet, 52, 0.25f);
+                if (!QueueLoopbackPacket(input, sender, packet)) return false;
+                // Deterministically expire the poll budget with actual UDP data
+                // queued. This exercises the same production discard branch as
+                // cold JIT or scheduling delay without depending on CI timing.
+                input.pollBudgetTicks = 0;
+                input.lastPollTicks = Stopwatch.GetTimestamp();
+                MotionSnapshot discarded = input.Poll();
+                if (discarded.IsFresh || discarded.Source != "Forza backlog discarded; waiting for fresh telemetry" ||
+                    input.ListeningPortCount != 0 || input.HasBindFailure) return false;
+                // The capture loop must continue through this neutral reset,
+                // then recover real fresh traffic on newly bound sockets.
+                input.pollBudgetTicks = Math.Max(1, Stopwatch.Frequency / 500);
+                if (input.Poll().IsFresh || input.ListeningPortCount != 2 || input.HasBindFailure) return false;
                 return WaitForLoopbackPacket(input, sender, packet, true);
             }
         }

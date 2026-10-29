@@ -1,9 +1,23 @@
-# VFORCE Purple GUI — NRF v1.2.3 (2026.10.29)
+# VFORCE Purple GUI — NRF v1.2.4 (2026.10.29)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
+
+## v1.2.4 capture listener recovery
+
+This GUI-only update corrects a capture failure exposed by the external
+synthetic Forza UDP test. Discarding a socket backlog can temporarily close
+the telemetry listeners; capture must allow the normal listener restart
+instead of reporting that transient reset as a permanent port-bind failure.
+A real failure to bind both Forza ports still reports an error.
+
+The aligned-head mapping, conservative nominal scaling and no-USB capture
+mode introduced in v1.2.3 are retained. The v1.2.3 distribution remains a
+separate version; use the complete v1.2.4 package for this capture fix.
+Synthetic test packets are clearly labeled as fixtures and do not establish
+telemetry from a running game or measured board output.
 
 ## v1.2.3 aligned-head mapping and telemetry capture
 
