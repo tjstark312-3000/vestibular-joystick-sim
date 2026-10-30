@@ -69,3 +69,10 @@ if ($selfTest.ExitCode -ne 0) {
 }
 
 Write-Host "PASS Windows x64 build, packet/telemetry/calibration/controller tests, and deterministic serial sender tests."
+
+$probeSource = Join-Path $root 'tools\ReadBoardStatus.cs'
+$probeExe = Join-Path $outputDirectory 'ReadBoardStatus.exe'
+& $csc /nologo /target:exe /optimize+ /platform:x64 /out:$probeExe /reference:System.dll /reference:System.Management.dll $probeSource
+if ($LASTEXITCODE -ne 0) { throw 'Board diagnostic compilation failed.' }
+& $probeExe --self-test | Tee-Object -FilePath (Join-Path $outputDirectory 'board-diagnostic-self-test.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Read-only board diagnostic self-test failed.' }

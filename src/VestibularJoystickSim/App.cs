@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.6.0")]
-[assembly: AssemblyFileVersion("1.2.6.0")]
+[assembly: AssemblyVersion("1.2.7.0")]
+[assembly: AssemblyFileVersion("1.2.7.0")]
 
 namespace VestibularJoystickSim
 {
@@ -138,7 +138,9 @@ namespace VestibularJoystickSim
         private const double Deadzone = 0.01;
         // These constants mirror VMocion-main\legacy_demo-main\gvs.py.
         private const double GvsMaxRate = 3.14 / 4.0;
-        private const double GvsMaxRamp = 0.03;
+        private const double RampRiseSeconds = 0.100;
+        private const double GvsMaxRamp = GvsMaxRate * 0.025 / RampRiseSeconds;
+        private double controlDeltaSeconds = 0.025;
         private const double PacketValueToVolts = 0.15;
         private const double MaxCurrentPeakMilliamp = ClassicNrfProfile.MaximumNominalMilliamp;
         private const double DefaultCurrentPeakMilliamp = 0.5;
@@ -579,8 +581,8 @@ namespace VestibularJoystickSim
             toolTip.SetToolTip(armButton, "Explicitly enable live output. Output always starts disarmed.");
             toolTip.SetToolTip(msfsLaunchButton, "Listen to Flight Simulator telemetry. Load a flight and keep SimConnect.dll beside this app.");
             toolTip.SetToolTip(forzaLaunchButton, "Listen to Forza telemetry. In Forza enable Data Out, IP 127.0.0.1, UDP port 5300 or 5607.");
-            toolTip.SetToolTip(calLeftButton, "Five-second left directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
-            toolTip.SetToolTip(calRightButton, "Five-second right directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
+            toolTip.SetToolTip(calLeftButton, "200 ms left bench directional pulse, about 100 ms rise at the nominal command limit. Requires explicit Arm; click again to stop.");
+            toolTip.SetToolTip(calRightButton, "200 ms right bench directional pulse, about 100 ms rise at the nominal command limit. Requires explicit Arm; click again to stop.");
             toolTip.SetToolTip(stopCalButton, "Stop the directional test and disarm output.");
             toolTip.SetToolTip(safetyFooter, safetyFooter.Text);
 
@@ -624,7 +626,7 @@ namespace VestibularJoystickSim
                    PacketValuesEqual(BodyToAlignedHeadRates(0.1, -0.2, 0.3), new double[] { 0.1, -0.2, 0.3 }) &&
                    Math.Abs(SlewRate(0, 1) - GvsMaxRamp) < 1e-12 &&
                    Math.Abs(SlewRate(0, -1) + GvsMaxRamp) < 1e-12 &&
-                   CalibrationIntensity(0) == 0 && CalibrationIntensity(2.5) == 1 && CalibrationIntensity(5) == 0 &&
+                   RampTimingSelfTest() && CalibrationIntensity(0) == 0 && CalibrationIntensity(.1) == 1 && CalibrationIntensity(.2) == 0 &&
                    PacketValuesEqual(JoystickToCommandedRates(0, 0, -1, 1), new double[] { GvsMaxRate, 0, 0 }) &&
                    PacketValuesEqual(JoystickToCommandedRates(1.0, 0.0, 0, 0.0), new double[] { 0.0, 0.0, GvsMaxRate }) &&
                    PacketValuesEqual(JoystickToCommandedRates(0.0, 1.0, 0, 0.0), new double[] { 0.0, GvsMaxRate, 0.0 }) &&
@@ -702,6 +704,7 @@ namespace VestibularJoystickSim
                     MotionSnapshot lastValid = MotionSnapshot.Empty("No sample");
                     double previewP = 0, previewQ = 0, previewR = 0;
                     long nextPoll = 0;
+                    long lastPreviewTicks = Stopwatch.GetTimestamp();
                     try
                     {
                         while (elapsed.Elapsed.TotalSeconds < seconds)
@@ -723,9 +726,12 @@ namespace VestibularJoystickSim
                             MotionSnapshot raw = fresh ? observed : lastValid;
                             double[] command = form.BuildCommandedRates(0, 0, 0);
                             double[] aligned = BodyToAlignedHeadRates(command[0], command[1], command[2]);
-                            previewP = SlewRate(previewP, aligned[0]);
-                            previewQ = SlewRate(previewQ, aligned[1]);
-                            previewR = SlewRate(previewR, aligned[2]);
+                            long previewTicks = Stopwatch.GetTimestamp();
+                            double previewDt = (previewTicks - lastPreviewTicks) / (double)Stopwatch.Frequency;
+                            lastPreviewTicks = previewTicks;
+                            previewP = SlewRate(previewP, aligned[0], previewDt);
+                            previewQ = SlewRate(previewQ, aligned[1], previewDt);
+                            previewR = SlewRate(previewR, aligned[2], previewDt);
                             double[] nominal = PqrToCodeMatrixCurrents(previewP, previewQ, previewR, DefaultCurrentPeakMilliamp);
                             int[] bytes = CurrentsToUartBytes(nominal);
                             byte[] packet = SerialOutput.Frame(new int[] { 10, bytes[0], bytes[1], bytes[2], bytes[3] });
@@ -770,6 +776,7 @@ namespace VestibularJoystickSim
                 "  \"forza_listening_ports\": " + listeningPorts.ToString(CultureInfo.InvariantCulture) + ",\n" +
                 "  \"head_frame\": \"aligned_body_head_assumption_no_tracking\",\n" +
                 "  \"nominal_limit_mA\": " + CaptureNumber(DefaultCurrentPeakMilliamp) + ",\n" +
+                "  \"host_ramp_rise_ms\": 100,\n" +
                 "  \"matrix_reference\": " + CaptureJson(ClassicNrfProfile.MappingReference) + ",\n" +
                 "  \"command_axis_convention\": " + CaptureJson(ClassicNrfProfile.AxisConvention) + ",\n" +
                 "  \"physical_game_axis_signs_verified\": false,\n" +
@@ -886,6 +893,7 @@ namespace VestibularJoystickSim
                     form.SelectController(-1);
                     SmokeRequire(form.physicalInput.SelectedXInputIndex == -1, "Auto controller selection");
                     form.RunAlignedFrameRegression(directory);
+                    form.RunCombinedInputRegression(directory);
                     form.SafeDisarmAndClose();
                     form.serialOutput.Connect(new SmokeTransport());
                     form.serialOutput.Arm();
@@ -975,6 +983,67 @@ namespace VestibularJoystickSim
             ResetCommandHistory();
             inputX = inputY = 0;
             File.AppendAllText(report, "PASS " + cases + " pure-axis game/joystick cases; body/head alignment is an explicit assumption.\r\n");
+        }
+
+        private static double TestInputForRate(double rate)
+        {
+            return rate == 0 ? 0 : Math.Sign(rate) * (Deadzone + (1.0 - Deadzone) * Math.Abs(rate) / GvsMaxRate);
+        }
+
+        private void RunCombinedInputRegression(string directory)
+        {
+            string report = Path.Combine(directory, "combined-input-regression.txt");
+            File.WriteAllText(report, "Actual GUI + mock serial: joystick and game summed before the single selected PDF mixer. No hardware.\r\n");
+            // Independent hand-calculated PDF vectors, not calls to Mix/Encode.
+            double[][] gameRates = {
+                new double[] { .2, .1, -.2 }, new double[] { -.2, -.1, .2 },
+                new double[] { 0, -.25, -.25 }, new double[] { 0, .7, 0 }, new double[] { 0, 0, -.7 }
+            };
+            double[][] stickRates = {
+                new double[] { .2, .1 }, new double[] { -.2, -.1 },
+                new double[] { .25, .25 }, new double[] { .7, 0 }, new double[] { 0, -.7 }
+            }; // Q, R produced by the left stick.
+            double[][] expectedPqr = {
+                new double[] { .2, .3, -.1 }, new double[] { -.2, -.3, .1 },
+                new double[] { 0, 0, 0 }, new double[] { 0, GvsMaxRate, 0 }, new double[] { 0, 0, -GvsMaxRate }
+            };
+            int[][] low = {
+                new int[] { 136, 112, 144, 120 }, new int[] { 120, 144, 112, 136 },
+                new int[] { 128, 128, 128, 128 }, new int[] { 161, 95, 161, 95 }, new int[] { 95, 161, 161, 95 }
+            };
+            int[][] high = {
+                new int[] { 153, 78, 178, 103 }, new int[] { 103, 178, 78, 153 },
+                new int[] { 128, 128, 128, 128 }, new int[] { 228, 28, 228, 28 }, new int[] { 28, 228, 228, 28 }
+            };
+            int cases = 0;
+            foreach (GameKind game in new GameKind[] { GameKind.Forza, GameKind.Msfs })
+            foreach (double limit in new double[] { .5, 1.5 })
+            for (int pose = 0; pose < 2; pose++)
+            for (int fixture = 0; fixture < gameRates.Length; fixture++)
+            {
+                serialOutput.Disarm(); ResetCommandHistory(); SelectGame(game);
+                paused = false; currentPeakMilliamp = limit;
+                inputY = TestInputForRate(stickRates[fixture][0]);
+                inputX = TestInputForRate(stickRates[fixture][1]);
+                roll = pose * 25; pitch = pose * -50; yaw = pose * 60;
+                double[] rate = gameRates[fixture];
+                MotionSnapshot sample = MotionSnapshot.Fresh("combined " + game, rate[0], rate[1], rate[2], roll, pitch, yaw);
+                if (game == GameKind.Forza) forzaMotion = sample; else msfsMotion = sample;
+                serialOutput.Arm();
+                for (int tick = 0; tick < 64; tick++) UpdateVestibularOutput();
+                SmokeRequire(PacketValuesEqual(new double[] { pRate, qRate, rRate }, expectedPqr[fixture]),
+                    "Combined joystick/game rates changed sign, gain or cancellation");
+                int[] expected = limit == .5 ? low[fixture] : high[fixture];
+                SmokeRequire(IntValuesEqual(currentBytes, expected), "Combined inputs failed independent PDF channel vector");
+                Thread.Sleep(26); SendVestibularOutput(); serialOutput.Pump();
+                string expectedFrame = BitConverter.ToString(SerialOutput.Frame(new int[] { 10, expected[0], expected[1], expected[2], expected[3] })).Replace('-', ' ');
+                SmokeRequire(serialOutput.Status.LastPacket == expectedFrame, "Combined PDF bytes did not reach mock serial transport");
+                File.AppendAllText(report, "PASS " + game + " nominal=" + CaptureNumber(limit) + " pose=" + pose + " fixture=" + fixture + " TX=" + expectedFrame + "\r\n");
+                cases++;
+            }
+            serialOutput.Disarm(); ResetCommandHistory(); inputX = inputY = 0;
+            currentPeakMilliamp = DefaultCurrentPeakMilliamp;
+            File.AppendAllText(report, "PASS " + cases + " combined game/joystick direction, cancellation, saturation, visual-frame independence and mock transport cases.\r\n");
         }
 
         private static int[] PdfDirectionPacket(int axis, int sign, int magnitude)
@@ -1161,6 +1230,7 @@ namespace VestibularJoystickSim
             long controlTick = Stopwatch.GetTimestamp();
             double dt = Math.Max(0.0, Math.Min((controlTick - lastTick) / (double)Stopwatch.Frequency, 0.05));
             lastTick = controlTick;
+            controlDeltaSeconds = dt;
             UpdatePhysicalStickInput();
             UpdateMsfsInput();
             UpdateForzaInput();
@@ -1232,9 +1302,9 @@ namespace VestibularJoystickSim
             // that frame. Display animation is never a head-orientation sensor.
             double[] headPqr = BodyToAlignedHeadRates(commandedP, commandedQ, commandedR);
 
-            pRate = SlewRate(pRate, headPqr[0]);
-            qRate = SlewRate(qRate, headPqr[1]);
-            rRate = SlewRate(rRate, headPqr[2]);
+            pRate = SlewRate(pRate, headPqr[0], controlDeltaSeconds);
+            qRate = SlewRate(qRate, headPqr[1], controlDeltaSeconds);
+            rRate = SlewRate(rRate, headPqr[2], controlDeltaSeconds);
 
             double[] currents = PqrToCodeMatrixCurrents(pRate, qRate, rRate, currentPeakMilliamp);
             int[] bytes = CurrentsToUartBytes(currents);
@@ -1521,7 +1591,7 @@ namespace VestibularJoystickSim
             SendNeutralOutput();
             calibrationDirection = direction < 0 ? -1 : 1;
             calibrationClock.Restart();
-            SetStatus(direction > 0 ? "Left Cal - five-second directional test" : "Right Cal - five-second directional test");
+            SetStatus(direction > 0 ? "Left Cal - 200 ms bench directional test" : "Right Cal - 200 ms bench directional test");
             UpdateUi();
         }
 
@@ -1541,8 +1611,8 @@ namespace VestibularJoystickSim
 
         private static double CalibrationIntensity(double seconds)
         {
-            if (seconds < 0 || seconds >= 5.0) return 0.0;
-            return seconds <= 2.5 ? seconds / 2.5 : (5.0 - seconds) / 2.5;
+            if (seconds < 0 || seconds >= 2 * RampRiseSeconds) return 0.0;
+            return seconds <= RampRiseSeconds ? seconds / RampRiseSeconds : (2 * RampRiseSeconds - seconds) / RampRiseSeconds;
         }
 
         private double GetCalibrationIntensity()
@@ -1550,7 +1620,7 @@ namespace VestibularJoystickSim
             if (calibrationDirection == 0) return 0.0;
             if (!armed || paused) { StopCalibration(); return 0.0; }
             double elapsed = calibrationClock.Elapsed.TotalSeconds;
-            if (elapsed >= 5.0)
+            if (elapsed >= 2 * RampRiseSeconds)
             {
                 ResetCommandHistory();
                 serialOutput.Disarm();
@@ -1958,6 +2028,8 @@ namespace VestibularJoystickSim
                 "Native game physical directions and electrode wiring require bench verification\r\n" +
                 "Game body P/Q/R (rad/s): " + gameMotion.P.ToString("0.000") + " / " + gameMotion.Q.ToString("0.000") + " / " + gameMotion.R.ToString("0.000") + "\r\n" +
                 "Display attitude does not change the output frame\r\n" +
+                "Bench host ramp: 100 ms neutral-to-full; 200 ms full reversal\r\n" +
+                "NRF fast response needs classic_r8_2_fast100_bench; installed identity not acknowledged here\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "Forza setup: Data Out ON, destination 127.0.0.1, UDP 5300 or 5607\r\n" +
@@ -2207,6 +2279,28 @@ namespace VestibularJoystickSim
             }
         }
 
+        private static double SlewRate(double previous, double target, double dt)
+        {
+            if (double.IsNaN(dt) || double.IsInfinity(dt)) dt = 0;
+            double step = GvsMaxRate * Clamp(dt, 0, .05) / RampRiseSeconds;
+            return previous + Clamp(target - previous, -step, step);
+        }
+
+        private static bool RampTimingSelfTest()
+        {
+            foreach (double sign in new double[] { -1, 1 })
+            {
+                double value = 0;
+                foreach (double dt in new double[] { .010, .015, .025, .020, .030 })
+                    value = SlewRate(value, sign * GvsMaxRate, dt);
+                if (Math.Abs(value - sign * GvsMaxRate) > 1e-12) return false;
+                for (int i = 0; i < 8; i++) value = SlewRate(value, -sign * GvsMaxRate, .025);
+                if (Math.Abs(value + sign * GvsMaxRate) > 1e-12) return false;
+            }
+            return SlewRate(0, GvsMaxRate, 0) == 0 && SlewRate(0, GvsMaxRate, double.NaN) == 0 &&
+                Math.Abs(SlewRate(0, GvsMaxRate, 100) - GvsMaxRate * .5) < 1e-12;
+        }
+
         private static double[] BodyToAlignedHeadRates(double p, double q, double r)
         {
             return new double[] { p, q, r };
@@ -2214,7 +2308,7 @@ namespace VestibularJoystickSim
 
         private static double SlewRate(double previous, double target)
         {
-            return previous + Clamp(target - previous, -GvsMaxRamp, GvsMaxRamp);
+            return SlewRate(previous, target, 0.025);
         }
 
         private static string FindPortByHardwareText(string[] ports, string[] needles)

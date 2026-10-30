@@ -9,9 +9,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $ExecutablePath = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $actualHash = (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualHash -ne $ExpectedExeSha256) { throw 'Synthetic capture must use the designated v1.2.6 EXE.' }
-if ([Diagnostics.FileVersionInfo]::GetVersionInfo($ExecutablePath).FileVersion.Trim() -ne '1.2.6.0') {
-    throw 'PDF direction-table validation requires application version 1.2.6.0.'
+if ($actualHash -ne $ExpectedExeSha256) { throw 'Synthetic capture must use the designated v1.2.7 EXE.' }
+if ([Diagnostics.FileVersionInfo]::GetVersionInfo($ExecutablePath).FileVersion.Trim() -ne '1.2.7.0') {
+    throw 'PDF direction-table validation requires application version 1.2.7.0.'
 }
 $buildInfo = @(Get-Content -LiteralPath (Join-Path (Split-Path $ExecutablePath -Parent) 'BUILD-INFO.txt'))
 if ($buildInfo -notcontains "source_commit=$ExpectedSourceCommit" -or
