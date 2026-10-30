@@ -237,6 +237,7 @@ namespace VestibularJoystickSim
                     if (now - lastSendAt < SendIntervalMs) return;
                     WriteLocked(Frame(new int[] { 10, values[0], values[1], values[2], values[3] }));
                     long completed = clock.Milliseconds;
+                    maxSendGapMs = Math.Max(maxSendGapMs, completed - lastSendAt);
                     if (completed - lastSendAt >= SenderGapMs)
                     { FaultLocked("Sender gap - disarmed; press Arm to start a new session."); return; }
                     lastSendAt = completed;

@@ -26,7 +26,7 @@ namespace VestibularJoystickSim
                 writer.Start();
                 Record("START version=" + Assembly.GetExecutingAssembly().GetName().Version + " exe=" + Assembly.GetExecutingAssembly().Location);
             }
-            catch { LogPath = "unavailable"; }
+            catch { writer = null; LogPath = "unavailable"; }
         }
         internal static void Record(string value)
         {

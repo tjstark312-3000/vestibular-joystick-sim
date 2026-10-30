@@ -892,7 +892,7 @@ namespace VestibularJoystickSim
                     form.serialOutput.Connect(new SmokeTransport());
                     form.serialOutput.Arm();
                     form.StopAfterUnexpectedError(new InvalidOperationException("injected UI callback failure"));
-                    SmokeRequire(!form.serialOutput.Status.Connected && !form.armed && !form.Enabled && form.paused,
+                    SmokeRequire(!form.serialOutput.Status.Connected && !form.armed && form.reportingUnexpectedError && !form.connectButton.Enabled && form.paused,
                         "Unexpected UI error must disconnect, stop simulation and prevent reconnect");
                     form.serialOutput.Dispose();
                     form.msfsInput.Dispose();
@@ -1158,7 +1158,7 @@ namespace VestibularJoystickSim
             timer.Stop(); visualTimer.Stop(); paused = true;
             ResetCommandHistory();
             SetStatus("Fault - output disconnected; restart app");
-            Enabled = false;
+            foreach (Control control in Controls) control.Enabled = false;
             if (offlineMode) return;
             MessageBox.Show("VFORCE stopped the simulation and disconnected output. Restart the app before continuing.\r\n\r\n" +
                 ex.Message + "\r\n\r\nDiagnostic log: " + RuntimeDiagnostics.LogPath,
