@@ -7,6 +7,8 @@ only. It does not flash, modify or provision firmware.
 
 ## v1.2.6 telemetry recovery and shutdown diagnostics
 
+Game buttons select telemetry directly. Clicking the selected game again keeps
+its existing stream/session. Switching to the other game disarms output.
 Forza now retries occupied ports every two seconds, including recovery of one
 missing port without closing the other working listener. Stale samples are
 reported as stale rather than retaining a live-sounding physics status.
@@ -209,13 +211,13 @@ packets, including angular velocity and attitude. It rejects invalid/nonfinite
 data, ignores non-loopback senders, and expires stale telemetry. A valid
 race-stopped packet clears live motion immediately.
 
-Each game tile opens a menu: choose telemetry from an already running game,
-launch the Steam edition, or launch the Microsoft Store edition. The Flight
-Sim menu includes Steam launch choices for 2020 and 2024. Selecting a game
-disarms output; Arm again explicitly when ready. If a launcher is unavailable,
-start the game manually and keep the feed selected.
-Another telemetry application can occupy the UDP port; choose the other
-supported port or close the conflicting application.
+Click **Forza 5** to listen directly to the Forza feed, or **Flight Sim** to
+listen directly to Flight Simulator. Start the game yourself. The selected feed
+is polled continuously while VFORCE is open, including in the background.
+Clicking the already selected game again keeps its stream/session; switching
+to the other game disarms output and requires explicit Arm. **LIVE** means fresh
+game data; **WAITING** does not. Another telemetry application can occupy a UDP
+port; choose the other supported port or close the conflicting application.
 
 ## Microsoft Flight Simulator
 
@@ -223,11 +225,10 @@ Keep the included x64 `SimConnect.dll` beside the EXE. Start Microsoft Flight
 Simulator locally and load into a flight, then select **Flight Sim** in the
 GUI. The app requests aircraft body rotation rates through SimConnect and
 reports whether the connection and motion feed are live. Paused or stopped
-simulator state suppresses game motion. If the game tile
-does not open the installed edition, launch Flight Simulator manually.
+simulator state suppresses game motion.
 
 This package preserves the local SimConnect integration. Simulator edition,
-installation, game launch and end-to-end board operation still require a
+installation and end-to-end board operation still require a
 check on the target Windows device; packaged DLL presence is not proof of
 a successful simulator connection.
 

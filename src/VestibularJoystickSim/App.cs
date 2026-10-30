@@ -161,9 +161,7 @@ namespace VestibularJoystickSim
         private Control smokeSurface;
         private readonly Button controllerButton;
         private readonly System.ComponentModel.IContainer menuComponents = new System.ComponentModel.Container();
-        private ContextMenuStrip controllerMenu, forzaMenu, msfsMenu;
-        private int offlineLaunchRequests;
-        private string offlineLaunchTarget;
+        private ContextMenuStrip controllerMenu;
         private readonly Button refreshButton;
         private readonly Button msfsLaunchButton;
         private readonly Button forzaLaunchButton;
@@ -322,8 +320,8 @@ namespace VestibularJoystickSim
             controllerBadge = new StatusBadge("LEFT STICK");
             msfsLaunchButton = MakeGameButton("FLIGHT SIM", msfsGameImage);
             forzaLaunchButton = MakeGameButton("FORZA 5", forzaGameImage);
-            msfsLaunchButton.Click += delegate { LaunchGame(GameKind.Msfs); };
-            forzaLaunchButton.Click += delegate { LaunchGame(GameKind.Forza); };
+            msfsLaunchButton.Click += delegate { SelectGame(GameKind.Msfs); };
+            forzaLaunchButton.Click += delegate { SelectGame(GameKind.Forza); };
             badgeFlow.Controls.Add(outputBadge);
             badgeFlow.Controls.Add(deviceBadge);
             badgeFlow.Controls.Add(controllerBadge);
@@ -579,8 +577,8 @@ namespace VestibularJoystickSim
             toolTip.SetToolTip(refreshButton, "Rescan Windows serial devices.");
             toolTip.SetToolTip(connectButton, "Connect or disconnect the selected VMocion serial device.");
             toolTip.SetToolTip(armButton, "Explicitly enable live output. Output always starts disarmed.");
-            toolTip.SetToolTip(msfsLaunchButton, "Choose telemetry only, Steam launch, or Microsoft Store launch.");
-            toolTip.SetToolTip(forzaLaunchButton, "Choose telemetry only, Steam launch, or Microsoft Store launch.");
+            toolTip.SetToolTip(msfsLaunchButton, "Listen to Flight Simulator telemetry. Load a flight and keep SimConnect.dll beside this app.");
+            toolTip.SetToolTip(forzaLaunchButton, "Listen to Forza telemetry. In Forza enable Data Out, IP 127.0.0.1, UDP port 5300 or 5607.");
             toolTip.SetToolTip(calLeftButton, "Five-second left directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
             toolTip.SetToolTip(calRightButton, "Five-second right directional ramp at the nominal command limit. Requires explicit Arm; click again to stop.");
             toolTip.SetToolTip(stopCalButton, "Stop the directional test and disarm output.");
@@ -694,7 +692,7 @@ namespace VestibularJoystickSim
             {
                 // The offline constructor disables serial discovery, connection,
                 // the output worker and UI timers. This branch never calls Arm,
-                // Connect, OpenGame or any input-injection API.
+                // Connect or any input-injection API.
                 using (MainForm form = new MainForm(true))
                 using (StreamWriter writer = new StreamWriter(output, false, new UTF8Encoding(false)))
                 {
@@ -900,7 +898,7 @@ namespace VestibularJoystickSim
                     form.toolTip.Dispose();
                 }
                 RunMenuLifecycleSmoke(directory);
-                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: aligned-frame game/joystick cross-axis regression at varied visual attitudes; game/controller native menu-click lifecycle and repeated reopen; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: aligned-frame game/joystick cross-axis regression at varied visual attitudes; direct game telemetry buttons, repeated selection and controller native menu-click lifecycle; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
                 return 0;
             }
             catch (Exception ex)
@@ -927,6 +925,7 @@ namespace VestibularJoystickSim
                 int[] baseline = null;
                 foreach (double[] attitude in attitudes)
                 {
+                    serialOutput.Disarm(); ResetCommandHistory();
                     SelectGame(game);
                     paused = false;
                     inputX = inputY = 0;
@@ -1027,41 +1026,32 @@ namespace VestibularJoystickSim
         private static void RunMenuLifecycleSmoke(string directory)
         {
             string report = Path.Combine(directory, "menu-lifecycle.txt");
-            File.WriteAllText(report, "Device-free native WinForms menu-click regression; output remains disarmed and external launch is suppressed.\r\n");
+            File.WriteAllText(report, "Device-free direct game buttons and native controller-menu regression; mock output transport only.\r\n");
             using (MainForm form = new MainForm(true))
             {
                 form.Show();
                 Application.DoEvents();
-                ContextMenuStrip forza = form.GetGameMenu(GameKind.Forza);
-                ContextMenuStrip msfs = form.GetGameMenu(GameKind.Msfs);
                 ContextMenuStrip controller = form.GetControllerMenu();
                 GameKind[] games = new GameKind[] { GameKind.Forza, GameKind.Msfs };
-                for (int round = 0; round < 2; round++)
+                form.serialOutput.Connect(new SmokeTransport());
+                for (int round = 0; round < 3; round++)
                 {
                     foreach (GameKind game in games)
                     {
-                        ContextMenuStrip menu = form.GetGameMenu(game);
-                        for (int i = 0; i < menu.Items.Count; i++)
-                        {
-                            int launchesBefore = form.offlineLaunchRequests;
-                            Button button = game == GameKind.Forza ? form.forzaLaunchButton : form.msfsLaunchButton;
-                            button.PerformClick(); // Calls the same LaunchGame method as a user click.
-                            Application.DoEvents();
-                            SmokeRequire(object.ReferenceEquals(menu, form.GetGameMenu(game)), "Game menu was recreated");
-                            SmokeClickMenuItem(menu, i);
-                            SmokeRequire(form.useForzaPhysics == (game == GameKind.Forza) &&
-                                form.useMsfsPhysics == (game == GameKind.Msfs) && !form.armed && form.calibrationDirection == 0,
-                                "Menu click failed source selection or changed safe output state");
-                            string expected = null;
-                            if (game == GameKind.Forza && i == 1) expected = "steam://rungameid/1551360";
-                            else if (game == GameKind.Msfs && i == 1) expected = "steam://rungameid/1250410";
-                            else if (game == GameKind.Msfs && i == 2) expected = "steam://rungameid/2537590";
-                            else if (i > 0) expected = "shell:AppsFolder\\" + (game == GameKind.Forza ?
-                                "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5" : "Microsoft.FlightSimulator_8wekyb3d8bbwe!App");
-                            SmokeRequire(form.offlineLaunchRequests == launchesBefore + (expected == null ? 0 : 1) &&
-                                (expected == null || form.offlineLaunchTarget == expected), "Wrong game launch route");
-                            File.AppendAllText(report, "PASS round " + round + " " + game + " item " + i + " " + menu.Items[i].Text + "\r\n");
-                        }
+                        Button button = game == GameKind.Forza ? form.forzaLaunchButton : form.msfsLaunchButton;
+                        button.PerformClick();
+                        Application.DoEvents();
+                        SmokeRequire(form.useForzaPhysics == (game == GameKind.Forza) &&
+                            form.useMsfsPhysics == (game == GameKind.Msfs) && !form.armed && form.calibrationDirection == 0,
+                            "Direct game button must select telemetry and disarm on source change");
+                        SmokeRequire(button.ContextMenuStrip == null && form.menuComponents.Components.Count == 1,
+                            "Game button unexpectedly created a launch menu");
+                        form.serialOutput.Arm();
+                        int before = form.packetCount;
+                        button.PerformClick();
+                        SmokeRequire(form.armed && form.packetCount == before,
+                            "Re-selecting the active game unexpectedly reset/stopped output");
+                        File.AppendAllText(report, "PASS direct " + game + " selection, no launch menu, repeated click preserves session\r\n");
                     }
                     for (int i = 0; i < controller.Items.Count; i++)
                     {
@@ -1070,18 +1060,12 @@ namespace VestibularJoystickSim
                         SmokeClickMenuItem(controller, i);
                         SmokeRequire(form.physicalInput.SelectedXInputIndex == i - 1 && !form.armed && form.calibrationDirection == 0,
                             "Controller menu did not select the exact slot safely");
-                        File.AppendAllText(report, "PASS round " + round + " controller item " + i + "\r\n");
                     }
-                    form.forzaLaunchButton.PerformClick();
-                    Application.DoEvents();
-                    forza.Close(ToolStripDropDownCloseReason.AppClicked);
-                    SmokeRequire(!forza.IsDisposed, "Dismissed menu was disposed");
                 }
                 form.Close();
                 form.Dispose();
-                SmokeRequire(forza.IsDisposed && msfs.IsDisposed && controller.IsDisposed,
-                    "Form did not dispose its owned dropdown menus");
-                File.AppendAllText(report, "PASS all 24 native menu item clicks, repeated reopen/dismiss and form-owned disposal. No games launched; no USB transport opened.\r\n");
+                SmokeRequire(controller.IsDisposed, "Form did not dispose controller menu");
+                File.AppendAllText(report, "PASS direct telemetry buttons and 15 native controller-menu clicks. No launch functions or game launch menus; no USB transport opened.\r\n");
             }
         }
 
@@ -1158,7 +1142,7 @@ namespace VestibularJoystickSim
             timer.Stop(); visualTimer.Stop(); paused = true;
             ResetCommandHistory();
             SetStatus("Fault - output disconnected; restart app");
-            foreach (Control control in Controls) control.Enabled = false;
+            foreach (Control control in (smokeSurface ?? this).Controls) control.Enabled = false;
             if (offlineMode) return;
             MessageBox.Show("VFORCE stopped the simulation and disconnected output. Restart the app before continuing.\r\n\r\n" +
                 ex.Message + "\r\n\r\nDiagnostic log: " + RuntimeDiagnostics.LogPath,
@@ -1840,6 +1824,10 @@ namespace VestibularJoystickSim
 
         private void SelectGame(GameKind game)
         {
+            // Re-selecting an already active feed must not close sockets or
+            // unexpectedly stop an existing session. Switching source disarms.
+            if ((game == GameKind.Forza && useForzaPhysics && !useMsfsPhysics) ||
+                (game == GameKind.Msfs && useMsfsPhysics && !useForzaPhysics)) return;
             serialOutput.Disarm();
             ResetCommandHistory();
             useMsfsPhysics = game == GameKind.Msfs;
@@ -1848,62 +1836,9 @@ namespace VestibularJoystickSim
             forzaInput.ResetStatus();
             msfsMotion = MotionSnapshot.Empty("MSFS waiting");
             forzaMotion = MotionSnapshot.Empty("Forza waiting");
-            SetStatus("Game selected - waiting for telemetry; press Arm when ready");
-            UpdateUi();
-        }
-
-        private ContextMenuStrip GetGameMenu(GameKind game)
-        {
-            ContextMenuStrip existing = game == GameKind.Forza ? forzaMenu : msfsMenu;
-            if (existing != null) return existing;
-            ContextMenuStrip menu = new ContextMenuStrip(menuComponents);
-            menu.Items.Add("Use telemetry from running game", null, delegate { SelectGame(game); });
-            if (game == GameKind.Forza)
-                menu.Items.Add("Launch Forza Horizon 5 - Steam", null, delegate { OpenGame(game, "steam://rungameid/1551360"); });
-            else
-            {
-                menu.Items.Add("Launch Flight Simulator 2020 - Steam", null, delegate { OpenGame(game, "steam://rungameid/1250410"); });
-                menu.Items.Add("Launch Flight Simulator 2024 - Steam", null, delegate { OpenGame(game, "steam://rungameid/2537590"); });
-            }
-            menu.Items.Add("Launch Microsoft Store edition", null, delegate {
-                string appId = game == GameKind.Forza ? "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5" : "Microsoft.FlightSimulator_8wekyb3d8bbwe!App";
-                OpenGame(game, "shell:AppsFolder\\" + appId);
-            });
-            // WinForms still uses this dropdown after its Closed event while
-            // dispatching an item click. Keep it alive for the form's lifetime.
-            if (game == GameKind.Forza) forzaMenu = menu;
-            else msfsMenu = menu;
-            return menu;
-        }
-
-        private void LaunchGame(GameKind game)
-        {
-            Button anchor = game == GameKind.Forza ? forzaLaunchButton : msfsLaunchButton;
-            GetGameMenu(game).Show(anchor, new Point(0, anchor.Height));
-        }
-
-        private void OpenGame(GameKind game, string target)
-        {
-            SelectGame(game);
-            if (offlineMode)
-            {
-                offlineLaunchRequests++;
-                offlineLaunchTarget = target;
-                SetStatus("Offline menu test - external launch suppressed");
-                return;
-            }
-            try
-            {
-                if (target.StartsWith("shell:", StringComparison.Ordinal))
-                    Process.Start(new ProcessStartInfo("explorer.exe", target) { UseShellExecute = true });
-                else Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-                SetStatus("Launch requested - waiting for game telemetry");
-            }
-            catch (Exception ex)
-            {
-                SetStatus("Launch unavailable - start game manually; telemetry remains selected");
-                MessageBox.Show("Start the game manually, then return to VFORCE.\r\n\r\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
+            SetStatus(game == GameKind.Forza ?
+                "Forza telemetry selected - Data Out on; IP 127.0.0.1; port 5300 or 5607; output disarmed" :
+                "Flight Sim telemetry selected - load a flight; output disarmed");
             UpdateUi();
         }
 
@@ -2025,6 +1960,8 @@ namespace VestibularJoystickSim
                 "Display attitude does not change the output frame\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
+                "Forza setup: Data Out ON, destination 127.0.0.1, UDP 5300 or 5607\r\n" +
+                "Flight Sim setup: load a flight, unpause, keep SimConnect.dll beside the EXE\r\n" +
                 "Forza counters: " + forzaInput.Diagnostics + "\r\n" +
                 "MSFS counters: " + msfsInput.Diagnostics + "\r\n" +
                 "Runtime log: " + RuntimeDiagnostics.LogPath + "\r\n" +
