@@ -98,7 +98,7 @@ jobs:
       - name: Package executable, runtime dependency and instructions
         shell: pwsh
         run: |
-          $name = 'VFORCE-Purple-NRF-v1.2.5-2026.10.29'
+          $name = 'VFORCE-Purple-NRF-v1.2.6-2026.10.30'
           $package = Join-Path $PWD "outputs\$name"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
@@ -115,17 +115,17 @@ jobs:
       - name: Upload Windows download
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29
+          name: VFORCE-Purple-NRF-v1.2.6-2026.10.30
           if-no-files-found: error
           path: |
-            outputs/VFORCE-Purple-NRF-v1.2.5-2026.10.29.zip
-            outputs/VFORCE-Purple-NRF-v1.2.5-2026.10.29/
+            outputs/VFORCE-Purple-NRF-v1.2.6-2026.10.30.zip
+            outputs/VFORCE-Purple-NRF-v1.2.6-2026.10.30/
 
       - name: Upload UI verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29-UI-check
+          name: VFORCE-Purple-NRF-v1.2.6-2026.10.30-UI-check
           if-no-files-found: warn
           path: outputs/ui-smoke/
 
@@ -133,6 +133,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.5-2026.10.29-Capture-check
+          name: VFORCE-Purple-NRF-v1.2.6-2026.10.30-Capture-check
           if-no-files-found: warn
           path: outputs/capture-smoke/

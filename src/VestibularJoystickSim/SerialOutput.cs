@@ -74,6 +74,7 @@ namespace VestibularJoystickSim
         public readonly bool Connected, Armed;
         public readonly int PacketCount;
         public readonly string LastPacket, Error;
+        public long SnapshotAgeMs, LastSendAgeMs, MaxWriteMs, MaxSendGapMs;
         public OutputStatus(bool connected, bool armed, int packets, string last, string error)
         { Connected = connected; Armed = armed; PacketCount = packets; LastPacket = last; Error = error; }
     }
@@ -95,6 +96,7 @@ namespace VestibularJoystickSim
         private int[] values = new int[] { 128, 128, 128, 128 };
         private long publishedAt, lastSendAt;
         private int packetCount;
+        private long maxWriteMs, maxSendGapMs;
         private string lastPacket = "-", error;
 
         public SerialOutput() : this(new OutputClock(), true) { }
@@ -112,7 +114,12 @@ namespace VestibularJoystickSim
 
         public OutputStatus Status
         {
-            get { lock (gate) return new OutputStatus(Connected, armed, packetCount, lastPacket, error); }
+            get { lock (gate) {
+                long now = clock.Milliseconds;
+                return new OutputStatus(Connected, armed, packetCount, lastPacket, error) {
+                    SnapshotAgeMs = now - publishedAt, LastSendAgeMs = now - lastSendAt,
+                    MaxWriteMs = maxWriteMs, MaxSendGapMs = maxSendGapMs };
+            } }
         }
         private bool Connected { get { return transport != null && transport.IsOpen; } }
         private void CheckDisposed() { if (disposed) throw new ObjectDisposedException("SerialOutput"); }
@@ -128,7 +135,7 @@ namespace VestibularJoystickSim
                 transport = next;
                 try { transport.Open(); }
                 catch { CloseLocked(); throw; }
-                packetCount = 0; lastPacket = "-"; error = null;
+                packetCount = 0; maxWriteMs = maxSendGapMs = 0; lastPacket = "-"; error = null;
                 ClearSnapshot(clock.Milliseconds);
             }
         }
@@ -221,6 +228,7 @@ namespace VestibularJoystickSim
                 try
                 {
                     long now = clock.Milliseconds;
+                    maxSendGapMs = Math.Max(maxSendGapMs, now - lastSendAt);
                     if (!Connected) { FaultLocked("Serial disconnected - disarmed."); return; }
                     if (now - lastSendAt >= SenderGapMs)
                     { FaultLocked("Sender gap - disarmed; press Arm to start a new session."); return; }
@@ -258,7 +266,9 @@ namespace VestibularJoystickSim
 
         private void WriteLocked(byte[] packet)
         {
+            long began = clock.Milliseconds;
             transport.Write(packet);
+            maxWriteMs = Math.Max(maxWriteMs, clock.Milliseconds - began);
             packetCount++;
             lastPacket = BitConverter.ToString(packet).Replace('-', ' ');
         }
@@ -275,7 +285,12 @@ namespace VestibularJoystickSim
                 CloseLocked();
             }
         }
-        private void FaultLocked(string reason) { DisarmLocked(reason); }
+        private void FaultLocked(string reason)
+        {
+            RuntimeDiagnostics.Record("OUTPUT_FAULT " + reason + " snapshotAgeMs=" + (clock.Milliseconds - publishedAt) +
+                " sendAgeMs=" + (clock.Milliseconds - lastSendAt) + " packets=" + packetCount + " lastTX=" + lastPacket);
+            DisarmLocked(reason);
+        }
         private void CloseLocked()
         {
             armed = false;

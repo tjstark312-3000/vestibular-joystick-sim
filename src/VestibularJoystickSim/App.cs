@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.5.0")]
-[assembly: AssemblyFileVersion("1.2.5.0")]
+[assembly: AssemblyVersion("1.2.6.0")]
+[assembly: AssemblyFileVersion("1.2.6.0")]
 
 namespace VestibularJoystickSim
 {
@@ -60,15 +60,39 @@ namespace VestibularJoystickSim
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new MainForm());
+                RuntimeDiagnostics.Start();
+                MainForm form = null;
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+                {
+                    if (form != null) form.StopAfterUnexpectedError(e.Exception);
+                    else RuntimeDiagnostics.Record("STARTUP_UI_ERROR " + e.Exception);
+                };
+                AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+                {
+                    // Managed worker failures terminate the process; record them, never resume.
+                    if (form != null) form.DisconnectForFatalError();
+                    RuntimeDiagnostics.Record("FATAL " + e.ExceptionObject);
+                    RuntimeDiagnostics.Stop();
+                };
+                try { form = new MainForm(); Application.Run(form); }
+                catch (Exception ex)
+                {
+                    if (form != null) form.DisconnectForFatalError();
+                    RuntimeDiagnostics.Record("MAIN_ERROR " + ex);
+                    MessageBox.Show("VFORCE stopped. Details: " + RuntimeDiagnostics.LogPath + "\r\n\r\n" + ex.Message,
+                        "VFORCE", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return 2;
+                }
+                finally { RuntimeDiagnostics.Record("EXIT"); RuntimeDiagnostics.Stop(); }
                 GC.KeepAlive(instanceMutex);
             }
             return 0;
         }
         private static int RunSelfTests(string reportPath)
         {
-            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback" };
-            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest };
+            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback/retry/stale status", "Asynchronous runtime fault log" };
+            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest, RuntimeDiagnostics.SelfTest };
             List<string> report = new List<string>();
             bool passed = true;
             for (int i = 0; i < tests.Length; i++)
@@ -202,6 +226,8 @@ namespace VestibularJoystickSim
         private bool paused;
         private int packetCount { get { return serialOutput.Status.PacketCount; } }
         private int calibrationDirection;
+        private long lastRuntimeReportTicks;
+        private bool reportingUnexpectedError;
 
         public MainForm() : this(false) { }
 
@@ -863,6 +889,11 @@ namespace VestibularJoystickSim
                     SmokeRequire(form.physicalInput.SelectedXInputIndex == -1, "Auto controller selection");
                     form.RunAlignedFrameRegression(directory);
                     form.SafeDisarmAndClose();
+                    form.serialOutput.Connect(new SmokeTransport());
+                    form.serialOutput.Arm();
+                    form.StopAfterUnexpectedError(new InvalidOperationException("injected UI callback failure"));
+                    SmokeRequire(!form.serialOutput.Status.Connected && !form.armed && !form.Enabled && form.paused,
+                        "Unexpected UI error must disconnect, stop simulation and prevent reconnect");
                     form.serialOutput.Dispose();
                     form.msfsInput.Dispose();
                     form.forzaInput.Dispose();
@@ -1108,21 +1139,30 @@ namespace VestibularJoystickSim
             }
             catch (Exception ex)
             {
-                timer.Stop();
-                serialOutput.Disarm();
-                paused = true;
-                try
-                {
-                    SafeDisarmAndClose();
-                }
-                catch
-                {
-                    // The output path may itself be the source of the failure.
-                }
-                SetStatus("Fault - output disarmed");
-                MessageBox.Show("VFORCE stopped the simulation and disarmed output after an unexpected error.\r\n\r\n" + ex.Message,
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                StopAfterUnexpectedError(ex);
             }
+        }
+
+        internal void DisconnectForFatalError()
+        {
+            try { serialOutput.Disconnect(); } catch { }
+        }
+
+        internal void StopAfterUnexpectedError(Exception ex)
+        {
+            // Disarm before reporting any exception, including menu/native callbacks.
+            DisconnectForFatalError();
+            RuntimeDiagnostics.Record("UI_ERROR " + ex);
+            if (reportingUnexpectedError || closing) return;
+            reportingUnexpectedError = true;
+            timer.Stop(); visualTimer.Stop(); paused = true;
+            ResetCommandHistory();
+            SetStatus("Fault - output disconnected; restart app");
+            Enabled = false;
+            if (offlineMode) return;
+            MessageBox.Show("VFORCE stopped the simulation and disconnected output. Restart the app before continuing.\r\n\r\n" +
+                ex.Message + "\r\n\r\nDiagnostic log: " + RuntimeDiagnostics.LogPath,
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         private void TimerTickCore()
@@ -1156,6 +1196,13 @@ namespace VestibularJoystickSim
 
             UpdateVestibularOutput();
             SendVestibularOutput();
+            if (controlTick - lastRuntimeReportTicks >= Stopwatch.Frequency)
+            {
+                lastRuntimeReportTicks = controlTick;
+                RuntimeDiagnostics.Record("STATE selected=" + (UseForzaPhysics() ? "forza" : UseMsfsPhysics() ? "msfs" : "joystick") +
+                    " game=" + GetFreshGameMotion().IsFresh + " forza={" + forzaInputStatus + "; " + forzaInput.Diagnostics +
+                    "} msfs={" + msfsInputStatus + "; " + msfsInput.Diagnostics + "} " + OutputDiagnosticText());
+            }
         }
 
         private void VisualTimerTick(object sender, EventArgs e)
@@ -1165,13 +1212,7 @@ namespace VestibularJoystickSim
                 UpdatePhysicalStickInput();
                 UpdateUi(false);
             }
-            catch
-            {
-                visualTimer.Stop();
-                serialOutput.InputFault("Controller/display polling failed");
-                StopCalibration();
-                SetStatus("Controller polling failed - disarmed");
-            }
+            catch (Exception ex) { StopAfterUnexpectedError(ex); }
         }
 
         private void GetVisualTargets(out double targetYaw, out double targetPitch, out double targetRoll)
@@ -1759,11 +1800,11 @@ namespace VestibularJoystickSim
             }
             else if (UseMsfsPhysics())
             {
-                inputState = "FLIGHT SIM SELECTED  |  START THE GAME";
+                inputState = msfsInputStatus.ToUpperInvariant();
             }
             else if (UseForzaPhysics())
             {
-                inputState = "FORZA SELECTED  |  START DRIVING";
+                inputState = forzaInputStatus.ToUpperInvariant();
             }
             inputLabel.Text = inputState;
 
@@ -1786,8 +1827,10 @@ namespace VestibularJoystickSim
             UpdateGameButton(forzaLaunchButton, "FORZA 5", UseForzaPhysics(), forzaFresh);
         }
 
+        private string lastLoggedStatus;
         private void SetStatus(string text)
         {
+            if (lastLoggedStatus != text) { RuntimeDiagnostics.Record("STATUS " + text); lastLoggedStatus = text; }
             if (statusLabel != null)
             {
                 statusLabel.Text = "SYSTEM  /  " + text.ToUpperInvariant();
@@ -1942,6 +1985,18 @@ namespace VestibularJoystickSim
             }
         }
 
+        private string OutputDiagnosticText()
+        {
+            OutputStatus output = serialOutput.Status;
+            return "serial open=" + output.Connected + " arm sent=" + output.Armed + " packets=" + output.PacketCount +
+                " TX=" + output.LastPacket + " snapshot age ms=" + output.SnapshotAgeMs +
+                " TX age ms=" + output.LastSendAgeMs + " max write ms=" + output.MaxWriteMs +
+                " max gap ms=" + output.MaxSendGapMs + " error=" + (output.Error ?? "none") +
+                " body PQR=" + CaptureNumber(GetFreshGameMotion().P) + "/" + CaptureNumber(GetFreshGameMotion().Q) + "/" + CaptureNumber(GetFreshGameMotion().R) +
+                " command PQR=" + CaptureNumber(pRate) + "/" + CaptureNumber(qRate) + "/" + CaptureNumber(rRate) +
+                " preview ABCD=" + string.Join("/", Array.ConvertAll(currentBytes, v => v.ToString()));
+        }
+
         private void ShowDiagnostics(object sender, EventArgs e)
         {
             string[] ports;
@@ -1970,6 +2025,10 @@ namespace VestibularJoystickSim
                 "Display attitude does not change the output frame\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
+                "Forza counters: " + forzaInput.Diagnostics + "\r\n" +
+                "MSFS counters: " + msfsInput.Diagnostics + "\r\n" +
+                "Runtime log: " + RuntimeDiagnostics.LogPath + "\r\n" +
+                "Sender: " + OutputDiagnosticText() + "\r\n" +
                 "VMocion: " + ((serialOutput.Status.Connected) ? connectedPortName + " serial open (no firmware ACK)" : "not connected") + "\r\n" +
                 "Available ports: " + (ports.Length == 0 ? "none" : string.Join(", ", ports)) + "\r\n" +
                 "Output: " + (armed ? "ARM REQUESTED / UNACKNOWLEDGED" : "DISARMED / SAFE") + "\r\n" +

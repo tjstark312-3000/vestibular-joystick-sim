@@ -1,9 +1,31 @@
-# VFORCE Purple GUI — NRF v1.2.5 (2026.10.29)
+# VFORCE Purple GUI — NRF v1.2.6 (2026.10.30)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
+
+## v1.2.6 telemetry recovery and shutdown diagnostics
+
+Forza now retries occupied ports every two seconds, including recovery of one
+missing port without closing the other working listener. Stale samples are
+reported as stale rather than retaining a live-sounding physics status.
+Advanced shows actual receive/accepted/inactive/rejected counts, bound ports,
+MSFS running/pause state and native error details, plus host write/gap timings.
+A selected game, an open serial port and ARM SENT are separate states. The
+Classic board has no acknowledgement; host writes do not prove analog output.
+
+Normal GUI runs save asynchronous session logs under `%LOCALAPPDATA%\VFORCE\Logs`.
+The log includes the running EXE/version, once-per-second game counters/rates,
+preview ABCD bytes, last transmitted frame, and exact host disarm reason.
+Unexpected UI errors disconnect output and require restarting the app; the
+full exception is saved. Worker crashes are recorded where managed shutdown
+permits. These logs cannot survive every power loss or native-process crash.
+
+The 100 ms control-update cutoff, 250 ms sender/firmware cutoff, explicit Arm,
+current limits and selected PDF matrix remain unchanged. Firmware is unchanged.
+This update diagnoses shutdowns; it does not claim the reported Ally fault is
+reproduced or fixed without the device log and a live game capture.
 
 ## v1.2.5 mapping selected from the Packet Definition PDF
 
@@ -77,7 +99,7 @@ instead of reporting that transient reset as a permanent port-bind failure.
 A real failure to bind both Forza ports still reports an error.
 
 The aligned-head frame assumption and no-USB capture mode introduced in
-v1.2.3 are retained. Use the complete v1.2.5 package for the current mapping
+v1.2.3 are retained. Use the complete v1.2.6 package for the current mapping
 and capture fix.
 Synthetic test packets are clearly labeled as fixtures and do not establish
 telemetry from a running game or measured board output.

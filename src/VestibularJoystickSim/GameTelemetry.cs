@@ -111,6 +111,23 @@ namespace VestibularJoystickSim
         private bool started;
         private string status = "Forza waiting on localhost UDP 5300/5607";
         private long lastPollTicks;
+        private long receivedPackets, activePackets, rejectedPackets, inactivePackets;
+        private string bindErrors = "";
+        public string Diagnostics
+        {
+            get
+            {
+                List<string> ports = new List<string>();
+                foreach (UdpClient client in clients)
+                    ports.Add(((IPEndPoint)client.Client.LocalEndPoint).Port.ToString());
+                return "listening=" + (ports.Count == 0 ? "none" : string.Join("/", ports.ToArray())) +
+                    "; received=" + receivedPackets + "; active=" + activePackets +
+                    "; inactive=" + inactivePackets + "; rejected=" + rejectedPackets +
+                    "; last sample age ms=" + latest.AgeMilliseconds.ToString("0") +
+                    (bindErrors.Length == 0 ? "" : "; bind errors=" + bindErrors);
+            }
+        }
+        private long lastBindAttempt;
         private long pollBudgetTicks = Math.Max(1, Stopwatch.Frequency / 500);
 
         public ForzaUdpTelemetryInput() : this(PrimaryPort, SecondaryPort) { }
@@ -168,14 +185,17 @@ namespace VestibularJoystickSim
                         break;
                     }
 
+                    receivedPackets++;
                     if (!IPAddress.IsLoopback(remote.Address))
                     {
+                        rejectedPackets++;
                         continue;
                     }
 
                     MotionSnapshot parsed;
                     if (TryParse(data, out parsed))
                     {
+                        activePackets++;
                         latest = parsed;
                         status = parsed.Source;
                     }
@@ -183,9 +203,11 @@ namespace VestibularJoystickSim
                     {
                         // A valid Forza packet explicitly says the race stopped. Clear
                         // live motion immediately instead of waiting for freshness expiry.
+                        inactivePackets++;
                         latest = parsed;
                         status = parsed.Source;
                     }
+                    else rejectedPackets++;
                 }
             }
             if (backlog)
@@ -194,7 +216,8 @@ namespace VestibularJoystickSim
                 status = "Forza backlog discarded; waiting for fresh telemetry";
                 latest = MotionSnapshot.Empty(status);
             }
-            return latest.IsFresh ? latest : MotionSnapshot.Empty(status);
+            return latest.IsFresh ? latest : MotionSnapshot.Empty(
+                latest.Connected ? "Forza telemetry stale - no fresh packets" : status);
         }
 
         public static bool SelfTest()
@@ -250,19 +273,27 @@ namespace VestibularJoystickSim
 
         private void EnsureStarted()
         {
-            if (started)
-            {
+            long now = Stopwatch.GetTimestamp();
+            if (started && (clients.Count == 2 || now - lastBindAttempt < Stopwatch.Frequency * 2))
                 return;
-            }
-
+            lastBindAttempt = now;
             started = true;
-            TryBind(primaryPort);
-            TryBind(secondaryPort);
+            bindErrors = "";
+            if (!IsListening(primaryPort)) TryBind(primaryPort);
+            if (!IsListening(secondaryPort)) TryBind(secondaryPort);
 
             if (clients.Count == 0)
             {
                 status = "Forza UDP bind failed";
             }
+        }
+
+        private bool IsListening(int port)
+        {
+            if (port == 0) return false; // Tests request two distinct ephemeral ports.
+            foreach (UdpClient client in clients)
+                if (((IPEndPoint)client.Client.LocalEndPoint).Port == port) return true;
+            return false;
         }
 
         private void TryBind(int port)
@@ -276,8 +307,9 @@ namespace VestibularJoystickSim
                 clients.Add(client);
                 status = "Forza waiting on localhost UDP " + port.ToString();
             }
-            catch
+            catch (Exception ex)
             {
+                bindErrors += (bindErrors.Length == 0 ? "" : "; ") + port + ": " + ex.Message;
                 if (client != null) client.Close();
                 // Another telemetry app may own the port; keep any port that did bind.
             }
@@ -405,7 +437,39 @@ namespace VestibularJoystickSim
                 // Rebinding after the safety discard must still accept new traffic.
                 if (!WaitForLoopbackPacket(input, sender, packet, true)) return false;
             }
-            return BacklogRecoverySelfTest();
+            return BacklogRecoverySelfTest() && BindRetryAndStaleSelfTest();
+        }
+
+        private static bool BindRetryAndStaleSelfTest()
+        {
+            using (UdpClient first = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)))
+            using (UdpClient second = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)))
+            using (UdpClient sender = new UdpClient())
+            using (ForzaUdpTelemetryInput input = new ForzaUdpTelemetryInput(
+                ((IPEndPoint)first.Client.LocalEndPoint).Port, ((IPEndPoint)second.Client.LocalEndPoint).Port))
+            {
+                if (input.Poll().IsFresh || !input.HasBindFailure) return false;
+                first.Close();
+                // Force only the retry deadline, keep the control loop fresh so
+                // success cannot come from the separate >100 ms queue reset.
+                input.lastBindAttempt = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3;
+                input.lastPollTicks = Stopwatch.GetTimestamp();
+                input.Poll();
+                if (input.ListeningPortCount != 1) return false;
+                second.Close();
+                input.lastBindAttempt = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 3;
+                input.lastPollTicks = Stopwatch.GetTimestamp();
+                input.Poll();
+                if (input.ListeningPortCount != 2) return false;
+                byte[] packet = new byte[MinimumSledPacketBytes];
+                WriteInt32(packet, 0, 1); WriteSingle(packet, 52, 0.25f);
+                if (!WaitForLoopbackPacket(input, sender, packet, true) || input.activePackets == 0) return false;
+                long end = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+                MotionSnapshot sample;
+                do { input.lastPollTicks = Stopwatch.GetTimestamp(); sample = input.Poll(); Thread.Sleep(5); }
+                while (Stopwatch.GetTimestamp() < end);
+                return !sample.IsFresh && sample.Source == "Forza telemetry stale - no fresh packets";
+            }
         }
 
         private static bool BacklogRecoverySelfTest()
@@ -512,6 +576,15 @@ namespace VestibularJoystickSim
         private bool paused;
         private bool extendedPaused;
         private bool simRunning;
+        private long acceptedSamples, rejectedSamples;
+        private string lastFailure = "none";
+        public string Diagnostics
+        {
+            get { return "native open=" + (handle != IntPtr.Zero) + "; samples=" + acceptedSamples +
+                "; rejected=" + rejectedSamples + "; pause known=" + pauseKnown +
+                "; running=" + simRunning + "; paused=" + (paused || extendedPaused) +
+                "; last sample age ms=" + latest.AgeMilliseconds.ToString("0") + "; last failure=" + lastFailure; }
+        }
 
         public MsfsSimConnectInput(int msfsWindowMessage)
         {
@@ -590,7 +663,7 @@ namespace VestibularJoystickSim
         {
             EnsureConnected(windowHandle);
             return pauseKnown && simRunning && !paused && !extendedPaused && latest.IsFresh
-                ? latest : MotionSnapshot.Empty(status);
+                ? latest : MotionSnapshot.Empty(latest.Connected ? "MSFS telemetry stale - no fresh physics" : status);
         }
 
         public void HandleWindowMessage(int message)
@@ -625,7 +698,7 @@ namespace VestibularJoystickSim
                 int hr = SimConnect_CallDispatch(handle, dispatchProc, IntPtr.Zero);
                 if (disconnectRequested)
                 {
-                    MarkDisconnected("MSFS waiting for simulator");
+                    MarkDisconnected(latest.Source);
                 }
                 else if (hr < 0)
                 {
@@ -640,6 +713,7 @@ namespace VestibularJoystickSim
 
         private void MarkDisconnected(string disconnectedStatus)
         {
+            lastFailure = disconnectedStatus;
             Close();
             status = disconnectedStatus;
             latest = MotionSnapshot.Empty(status);
@@ -678,9 +752,9 @@ namespace VestibularJoystickSim
             {
                 MarkDisconnected("MSFS SimConnect.dll missing");
             }
-            catch
+            catch (Exception ex)
             {
-                MarkDisconnected("MSFS SimConnect failed");
+                MarkDisconnected("MSFS SimConnect failed: " + ex.GetType().Name + " - " + ex.Message);
             }
         }
 
@@ -756,7 +830,9 @@ namespace VestibularJoystickSim
             {
                 // Async definition/subscription failures must not leave cached
                 // motion live. Reopen outside the native callback.
-                latest = MotionSnapshot.Empty("MSFS SimConnect exception");
+                lastFailure = declaredSize >= 24 ? "MSFS exception=" + Marshal.ReadInt32(data, 12) +
+                    " sendID=" + Marshal.ReadInt32(data, 16) + " index=" + Marshal.ReadInt32(data, 20) : "MSFS truncated exception";
+                latest = MotionSnapshot.Empty(lastFailure);
                 disconnectRequested = true;
                 return;
             }
@@ -785,7 +861,7 @@ namespace VestibularJoystickSim
                 return;
             }
 
-            if (!pauseKnown || !simRunning || paused || extendedPaused) return;
+            if (!pauseKnown || !simRunning || paused || extendedPaused) { rejectedSamples++; return; }
 
             double bodyX = ReadDouble(data, SimobjectDataOffset);
             double bodyY = ReadDouble(data, SimobjectDataOffset + 8);
@@ -793,6 +869,7 @@ namespace VestibularJoystickSim
             latest = MapBodyRates(bodyX, bodyY, bodyZ);
             if (latest.Connected)
             {
+                acceptedSamples++;
                 byte[] prefix = new byte[64];
                 Marshal.Copy(data, prefix, 0, prefix.Length);
                 latest.RawPrefixHex = BitConverter.ToString(prefix);

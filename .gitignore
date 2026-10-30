@@ -40,3 +40,5 @@
 !src/VestibularJoystickSim/GameTelemetry.cs
 !.github/workflows/windows-purple-nrf.yml
 !src/VestibularJoystickSim/JoystickInput.cs
+
+!src/VestibularJoystickSim/RuntimeDiagnostics.cs

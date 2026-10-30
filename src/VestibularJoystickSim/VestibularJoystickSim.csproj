@@ -24,6 +24,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App.cs" />
+    <Compile Include="RuntimeDiagnostics.cs" />
     <Compile Include="SerialOutput.cs" />
     <Compile Include="SerialOutputTests.cs" />
     <Compile Include="ClassicNrfProfile.cs" />
