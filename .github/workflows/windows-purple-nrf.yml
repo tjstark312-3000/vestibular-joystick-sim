@@ -87,7 +87,7 @@ jobs:
         run: |
           $buildDir = Join-Path $PWD 'outputs\vestibular-joystick-sim'
           $exe = Join-Path $buildDir 'VestibularJoystickSim.exe'
-          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false" |
+          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false`nrecommended_fast_firmware=classic_r8_2_fast100_bench" |
             Set-Content -Encoding utf8 (Join-Path $buildDir 'BUILD-INFO.txt')
           $expectedHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
           .\tools\Test-SyntheticForzaCapture.ps1 -ExecutablePath $exe `

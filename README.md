@@ -1,9 +1,37 @@
-# VFORCE Purple GUI — NRF v1.2.6 (2026.10.30)
+# VFORCE Purple GUI — NRF v1.2.7 fast bench (2026.10.30)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 **Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
 Flight Simulator SimConnect input. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
+
+## v1.2.7 fast-response dummy-load bench pair
+
+The host now uses elapsed-time slew limiting with a100ms neutral-to-full-axis
+rise target and200ms full reversal. A delayed UI tick is capped at50ms of
+ramp progress; it cannot jump directly to a full command after a stall.
+The paired NRF candidate is `classic_r8_2_fast100_bench` /v0.8.2, with bounded
+250-code steps per >=5ms. The old v0.8.1 firmware remains protocol-compatible
+but limits response speed. Faster response requires updating both layers.
+Nominal current ceiling, PDF matrix and existing cutoff/rearm protections remain.
+
+Left/Right Cal now make a short triangular bench pulse:100ms rise and100ms
+fall, then disarm at200ms. There is no sustained hold. The Cal buttons are
+finite direction checks; live game/joystick operation uses Arm, not repeated Cal.
+These are software targets, not measured terminal-current timing or human-use
+qualification. Keep body electrodes disconnected and use dummy loads.
+
+`ReadBoardStatus.exe` is a separate output-off diagnostic. Close VFORCE first,
+keep the stopped board powered, then double-click it and enter its application
+COM port. It verifies the XIAO USB identity and sends only INFO and STATUS at
+115200 baud. It records the installed revision, first recorded cutoff reason,
+fault input/latch and uptime under `%LOCALAPPDATA%\VFORCE\Logs`. Changing
+serial transport stops output. Power-cycling clears RAM stop history. Unknown
+firmware or an unverified output-off state is reported as a failure.
+
+The Windows checks also exercise40 combined joystick/game cases through the
+actual GUI and mock serial transport: both game adapters, both nominal limits,
+input cancellation, saturation and independence from display attitude.
 
 ## v1.2.6 telemetry recovery and shutdown diagnostics
 
@@ -101,7 +129,7 @@ instead of reporting that transient reset as a permanent port-bind failure.
 A real failure to bind both Forza ports still reports an error.
 
 The aligned-head frame assumption and no-USB capture mode introduced in
-v1.2.3 are retained. Use the complete v1.2.6 package for the current mapping
+v1.2.3 are retained. Use the complete v1.2.7 package for the current mapping
 and capture fix.
 Synthetic test packets are clearly labeled as fixtures and do not establish
 telemetry from a running game or measured board output.
@@ -182,9 +210,9 @@ ASUS ROG Ally. Tyler's on-device check is still required for those results.
 
 ## Left Cal and Right Cal
 
-The two buttons run finite, opposite-direction check ramps using the selected
+The two buttons run finite, opposite-direction check pulses using the selected
 command scale. They use the existing four-channel motion protocol, override
-game/stick motion while the five-second ramp runs, and disarm when complete.
+game/stick motion during the200ms pulse, and disarm when complete.
 Click the active direction again or **Stop Cal** to stop and disarm.
 They are directional checks: they do not measure electrical output, save
 calibration coefficients, or change firmware calibration.
