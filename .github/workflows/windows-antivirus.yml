@@ -27,9 +27,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Get-MpComputerStatus | Format-List AMServiceEnabled,AntivirusEnabled,AMRunningMode,AntivirusSignatureVersion,AntivirusSignatureLastUpdated
-          Update-MpSignature
+          try { Update-MpSignature } catch { Write-Warning "Signature update failed: $_. A scan still requires enabled protection and signatures from the last 24 hours." }
           $status = Get-MpComputerStatus
           if (-not $status.AMServiceEnabled -or -not $status.AntivirusEnabled) { throw 'Defender is unavailable; no clean verdict is possible.' }
+          if (-not $status.AntivirusSignatureLastUpdated -or ((Get-Date) - $status.AntivirusSignatureLastUpdated).TotalHours -gt 24) { throw 'Current antivirus signatures are required.' }
           $scan = Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $scan) { $scan = Get-Item "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" }
           & $scan.FullName -Scan -ScanType 3 -File (Join-Path $PWD 'package')
