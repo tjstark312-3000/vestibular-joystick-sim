@@ -1,0 +1,40 @@
+name: Scan designated v1.2.7 Windows package
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-antivirus.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  scan:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Download the exact tested package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh run download 41108123125 --repo '${{ github.repository }}' --name 'VFORCE-Purple-NRF-v1.2.7-2026.10.30' --dir package
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed.' }
+          $exe = Get-ChildItem package -Recurse -Filter VestibularJoystickSim.exe | Select-Object -First 1
+          if (-not $exe -or (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'fb8470123fa6742923b58c8c5f754d16e845537441fa7e4a5770502b4744eecd') { throw 'Designated EXE hash mismatch.' }
+      - name: Scan without changing Defender protections
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-MpComputerStatus | Format-List AMServiceEnabled,AntivirusEnabled,AMRunningMode,AntivirusSignatureVersion,AntivirusSignatureLastUpdated
+          Update-MpSignature
+          $status = Get-MpComputerStatus
+          if (-not $status.AMServiceEnabled -or -not $status.AntivirusEnabled) { throw 'Defender is unavailable; no clean verdict is possible.' }
+          $scan = Get-ChildItem "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $scan) { $scan = Get-Item "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" }
+          & $scan.FullName -Scan -ScanType 3 -File (Join-Path $PWD 'package')
+          if ($LASTEXITCODE -ne 0) { throw "Defender scan did not return a clean completion: $LASTEXITCODE" }
+          $detections = @(Get-MpThreatDetection)
+          if ($detections.Count -gt 0) { $detections | Format-List; throw 'Defender reported detections on this fresh runner.' }
+          Get-ChildItem package -File -Recurse | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
+          'Defender completed this custom package scan without reporting a detection. This does not override Google Drive or prove absence of malware.'
