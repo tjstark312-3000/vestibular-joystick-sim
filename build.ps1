@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+$controlSource = Join-Path $root 'src\VestibularJoystickSim\ControlWorker.cs'
+$controlTests = Join-Path $root 'src\VestibularJoystickSim\ControlWorkerTests.cs'
 $source = Join-Path $root 'src\VestibularJoystickSim\App.cs'
 $senderSource = Join-Path $root 'src\VestibularJoystickSim\SerialOutput.cs'
 $runtimeSource = Join-Path $root 'src\VestibularJoystickSim\RuntimeDiagnostics.cs'
@@ -50,7 +52,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
     /reference:System.Management.dll `
-    $source $runtimeSource $senderSource $senderTests $profileSource $telemetrySource $joystickSource
+    $source $runtimeSource $senderSource $senderTests $profileSource $telemetrySource $joystickSource $controlSource $controlTests
 
 if ($LASTEXITCODE -ne 0) {
     throw "C# compilation failed with exit code $LASTEXITCODE."

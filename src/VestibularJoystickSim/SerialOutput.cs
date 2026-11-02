@@ -140,11 +140,14 @@ namespace VestibularJoystickSim
             }
         }
 
-        public void Publish(int[] command)
+        public void Publish(int[] command) { PublishAt(command, clock.Milliseconds); }
+
+        internal void PublishAt(int[] command, long computedAt)
         {
-            // The command was computed before this call. Waiting behind a port
-            // write must never relabel an old UI snapshot with a new timestamp.
-            long computedAt = clock.Milliseconds;
+            // Preserve acquisition time across native input, computation and a
+            // pending port write. Late data never becomes a fresh command.
+            long now = clock.Milliseconds;
+            if (computedAt > now) throw new ArgumentOutOfRangeException("computedAt");
             if (command == null || command.Length != 4) throw new ArgumentException("Four channels required.");
             int[] copy = (int[])command.Clone();
             foreach (int value in copy)
@@ -233,7 +236,7 @@ namespace VestibularJoystickSim
                     if (now - lastSendAt >= SenderGapMs)
                     { FaultLocked("Sender gap - disarmed; press Arm to start a new session."); return; }
                     if (now - publishedAt >= SnapshotLifetimeMs)
-                    { FaultLocked("Input updates stopped - disarmed; press Arm to start a new session."); return; }
+                    { FaultLocked("Input acquisition stopped - disarmed; press Arm to start a new session."); return; }
                     if (now - lastSendAt < SendIntervalMs) return;
                     WriteLocked(Frame(new int[] { 10, values[0], values[1], values[2], values[3] }));
                     long completed = clock.Milliseconds;

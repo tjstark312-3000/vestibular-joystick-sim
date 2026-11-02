@@ -107,7 +107,7 @@ namespace VestibularJoystickSim
                 c.Set(origin + 99); sender.Pump();
                 Require(sender.Status.Armed, "snapshot valid before 100 ms");
                 c.Set(origin + 100); sender.Pump();
-                Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Input updates stopped") >= 0,
+                Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Input acquisition stopped") >= 0,
                     "snapshot expires exactly at 100 ms");
                 OffTail(t); NoResume(sender, t, c);
                 sender.Arm();
@@ -260,7 +260,7 @@ namespace VestibularJoystickSim
                 c.ReadHook = null; t.BeforeWrite = null;
                 Require(timestampBeforeWait, "publish timestamps before waiting for serial lock");
                 sender.Pump();
-                Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Input updates stopped") >= 0,
+                Require(!sender.Status.Armed && sender.Status.Error.IndexOf("Input acquisition stopped") >= 0,
                     "lock wait must not refresh an expired snapshot");
                 OffTail(t);
             }

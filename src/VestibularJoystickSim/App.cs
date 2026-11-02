@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.7.0")]
-[assembly: AssemblyFileVersion("1.2.7.0")]
+[assembly: AssemblyVersion("1.2.8.0")]
+[assembly: AssemblyFileVersion("1.2.8.0")]
 
 namespace VestibularJoystickSim
 {
@@ -91,8 +91,8 @@ namespace VestibularJoystickSim
         }
         private static int RunSelfTests(string reportPath)
         {
-            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback/retry/stale status", "Asynchronous runtime fault log" };
-            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest, RuntimeDiagnostics.SelfTest };
+            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback/retry/stale status", "Asynchronous runtime fault log", "Background control independent of UI and acquisition fault stop" };
+            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest, RuntimeDiagnostics.SelfTest, ControlWorkerTests.Run };
             List<string> report = new List<string>();
             bool passed = true;
             for (int i = 0; i < tests.Length; i++)
@@ -180,6 +180,14 @@ namespace VestibularJoystickSim
         private readonly Label inputLabel;
 
         private readonly SerialOutput serialOutput;
+        private readonly OutputClock outputClock = new OutputClock();
+        private readonly object controlGate = new object();
+        private readonly object telemetryGate = new object();
+        private readonly int uiThreadId = Thread.CurrentThread.ManagedThreadId;
+        private ControlWorker controlWorker;
+        private volatile string pendingControlStatus;
+        private volatile string forzaDiagnostics = "not started";
+        private volatile string msfsDiagnostics = "not started";
         private string connectedPortName;
         private readonly Stopwatch connectionAge = new Stopwatch();
         private readonly Stopwatch calibrationClock = new Stopwatch();
@@ -190,8 +198,8 @@ namespace VestibularJoystickSim
         private DateTime lastUiTextUpdate = DateTime.MinValue;
         private int serialDiscoveryRunning;
         private volatile bool closing;
-        private bool useMsfsPhysics;
-        private bool useForzaPhysics;
+        private volatile bool useMsfsPhysics;
+        private volatile bool useForzaPhysics;
         private double lastRenderedInputX = double.NaN;
         private double lastRenderedInputY = double.NaN;
         private double lastRenderedYaw = double.NaN;
@@ -223,7 +231,7 @@ namespace VestibularJoystickSim
         private readonly double[] dacValues = new double[] { 0.0, 0.0, 0.0, 0.0 };
         private string lastPacketText { get { return serialOutput.Status.LastPacket; } }
         private double currentPeakMilliamp = DefaultCurrentPeakMilliamp;
-        private bool paused;
+        private volatile bool paused;
         private int packetCount { get { return serialOutput.Status.PacketCount; } }
         private int calibrationDirection;
         private long lastRuntimeReportTicks;
@@ -234,7 +242,7 @@ namespace VestibularJoystickSim
         private MainForm(bool offline)
         {
             offlineMode = offline;
-            serialOutput = new SerialOutput(new OutputClock(), !offline);
+            serialOutput = new SerialOutput(outputClock, !offline);
             SuspendLayout();
             Text = "VFORCE | Vestibular Simulation Console";
             Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -618,6 +626,7 @@ namespace VestibularJoystickSim
                 connectButton.Select();
             };
             ResumeLayout(true);
+            if (!offlineMode) controlWorker = new ControlWorker(ControlTick, ControlFailed, true);
         }
 
         public static bool SelfTest()
@@ -1147,6 +1156,8 @@ namespace VestibularJoystickSim
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             closing = true;
+            serialOutput.Disarm();
+            if (controlWorker != null) controlWorker.Dispose();
             timer.Stop();
             visualTimer.Stop();
             SafeDisarmAndClose();
@@ -1199,6 +1210,7 @@ namespace VestibularJoystickSim
         internal void DisconnectForFatalError()
         {
             try { serialOutput.Disconnect(); } catch { }
+            if (controlWorker != null) controlWorker.Dispose();
         }
 
         internal void StopAfterUnexpectedError(Exception ex)
@@ -1220,50 +1232,73 @@ namespace VestibularJoystickSim
 
         private void TimerTickCore()
         {
+            // USB discovery and SimConnect's window API remain on the UI thread.
+            // They cannot delay joystick acquisition, control, or serial TX.
             DateTime now = DateTime.UtcNow;
-            if ((!serialOutput.Status.Connected) && (now - lastSerialScan).TotalSeconds >= 5.0)
+            if (!serialOutput.Status.Connected && (now - lastSerialScan).TotalSeconds >= 5.0)
             {
                 lastSerialScan = now;
                 TryAutoConnectVestibularDevice();
             }
-
-            long controlTick = Stopwatch.GetTimestamp();
-            double dt = Math.Max(0.0, Math.Min((controlTick - lastTick) / (double)Stopwatch.Frequency, 0.05));
-            lastTick = controlTick;
-            controlDeltaSeconds = dt;
-            UpdatePhysicalStickInput();
             UpdateMsfsInput();
-            UpdateForzaInput();
+            string status = Interlocked.Exchange(ref pendingControlStatus, null);
+            if (status != null) SetStatus(status);
+        }
 
-            if (!paused)
+        private void ControlTick()
+        {
+            // Timestamp BEFORE native input/UDP acquisition. A slow acquisition
+            // must not relabel an old sample as fresh when it eventually returns.
+            lock (controlGate)
             {
-                double targetYaw;
-                double targetPitch;
-                double targetRoll;
-                GetVisualTargets(out targetYaw, out targetPitch, out targetRoll);
-                double response = 1.0 - Math.Pow(0.001, dt);
-
-                yaw = Lerp(yaw, targetYaw, response);
-                pitch = Lerp(pitch, targetPitch, response);
-                roll = Lerp(roll, targetRoll, response);
+                if (closing) return;
+                long acquiredAt = outputClock.Milliseconds;
+                long tick = Stopwatch.GetTimestamp();
+                controlDeltaSeconds = Math.Max(0.0, Math.Min((tick - lastTick) / (double)Stopwatch.Frequency, 0.05));
+                lastTick = tick;
+                UpdatePhysicalStickInput();
+                UpdateForzaInput();
+                // A missing controller is not a source of repeated live commands.
+                // A fresh game stream or an explicit finite calibration may remain.
+                if (armed && !paused && calibrationDirection == 0 &&
+                    !physicalInputConnected && !GetFreshGameMotion().IsFresh)
+                {
+                    ResetCommandHistory();
+                    serialOutput.InputFault("Controller and game input unavailable");
+                }
+                if (!paused)
+                {
+                    double targetYaw, targetPitch, targetRoll;
+                    GetVisualTargets(out targetYaw, out targetPitch, out targetRoll);
+                    double response = 1.0 - Math.Pow(0.001, controlDeltaSeconds);
+                    yaw = Lerp(yaw, targetYaw, response);
+                    pitch = Lerp(pitch, targetPitch, response);
+                    roll = Lerp(roll, targetRoll, response);
+                }
+                UpdateVestibularOutput();
+                serialOutput.PublishAt(currentBytes, acquiredAt);
+                if (tick - lastRuntimeReportTicks >= Stopwatch.Frequency)
+                {
+                    lastRuntimeReportTicks = tick;
+                    RuntimeDiagnostics.Record("STATE control=background selected=" +
+                        (UseForzaPhysics() ? "forza" : UseMsfsPhysics() ? "msfs" : "joystick") +
+                        " game=" + GetFreshGameMotion().IsFresh + " forza={" + forzaInputStatus + "; " + forzaDiagnostics +
+                        "} msfs={" + msfsInputStatus + "; " + msfsDiagnostics + "} " + OutputDiagnosticText());
+                }
             }
+        }
 
-            UpdateVestibularOutput();
-            SendVestibularOutput();
-            if (controlTick - lastRuntimeReportTicks >= Stopwatch.Frequency)
-            {
-                lastRuntimeReportTicks = controlTick;
-                RuntimeDiagnostics.Record("STATE selected=" + (UseForzaPhysics() ? "forza" : UseMsfsPhysics() ? "msfs" : "joystick") +
-                    " game=" + GetFreshGameMotion().IsFresh + " forza={" + forzaInputStatus + "; " + forzaInput.Diagnostics +
-                    "} msfs={" + msfsInputStatus + "; " + msfsInput.Diagnostics + "} " + OutputDiagnosticText());
-            }
+        private void ControlFailed(Exception ex)
+        {
+            serialOutput.InputFault("Control acquisition failed: " + ex.Message);
+            pendingControlStatus = "Input control stopped - restart app: " + ex.Message;
+            RuntimeDiagnostics.Record("CONTROL_ERROR " + ex);
         }
 
         private void VisualTimerTick(object sender, EventArgs e)
         {
             try
             {
-                UpdatePhysicalStickInput();
                 UpdateUi(false);
             }
             catch (Exception ex) { StopAfterUnexpectedError(ex); }
@@ -1326,20 +1361,26 @@ namespace VestibularJoystickSim
 
         private void ResetCommandHistory()
         {
-            StopCalibration();
-            pRate = qRate = rRate = commandedP = commandedQ = commandedR = 0.0;
-            for (int i = 0; i < 4; i++)
+            lock (controlGate)
             {
-                packetValues[i] = currentMilliampValues[i] = dacValues[i] = 0.0;
-                currentBytes[i] = 128;
+                StopCalibration();
+                pRate = qRate = rRate = commandedP = commandedQ = commandedR = 0.0;
+                for (int i = 0; i < 4; i++)
+                {
+                    packetValues[i] = currentMilliampValues[i] = dacValues[i] = 0.0;
+                    currentBytes[i] = 128;
+                }
             }
         }
 
         private void SendNeutralOutput()
         {
-            ResetCommandHistory();
-            try { serialOutput.Neutral(); }
-            catch (Exception ex) { SetStatus("Neutral failed - disarmed: " + ex.Message); }
+            lock (controlGate)
+            {
+                ResetCommandHistory();
+                try { serialOutput.Neutral(); }
+                catch (Exception ex) { SetStatus("Neutral failed - disarmed: " + ex.Message); }
+            }
         }
 
         private void ConnectButtonClick(object sender, EventArgs e)
@@ -1388,12 +1429,15 @@ namespace VestibularJoystickSim
 
         private void SelectController(int index)
         {
-            serialOutput.Disarm();
-            ResetCommandHistory();
-            physicalInput.SelectedXInputIndex = index;
-            physicalInputConnected = false;
-            physicalInputIndex = -1;
-            inputX = inputY = 0.0;
+            lock (controlGate)
+            {
+                serialOutput.Disarm();
+                ResetCommandHistory();
+                physicalInput.SelectedXInputIndex = index;
+                physicalInputConnected = false;
+                physicalInputIndex = -1;
+                inputX = inputY = 0.0;
+            }
             SetStatus("Controller selected - move the left stick while disarmed");
             UpdateUi();
         }
@@ -1432,28 +1476,16 @@ namespace VestibularJoystickSim
 
         private void UpdateMsfsInput()
         {
-            if (!UseMsfsPhysics())
-            {
-                msfsMotion = MotionSnapshot.Empty("MSFS physics off");
-                msfsInputStatus = "MSFS physics off";
-                return;
-            }
-
-            msfsMotion = msfsInput.Poll(Handle);
-            msfsInputStatus = msfsMotion.Source;
+            MotionSnapshot next = UseMsfsPhysics() ? msfsInput.Poll(Handle) : MotionSnapshot.Empty("MSFS physics off");
+            msfsDiagnostics = msfsInput.Diagnostics;
+            lock (telemetryGate) { msfsMotion = next; msfsInputStatus = next.Source; }
         }
 
         private void UpdateForzaInput()
         {
-            if (!UseForzaPhysics())
-            {
-                forzaMotion = MotionSnapshot.Empty("Forza physics off");
-                forzaInputStatus = "Forza physics off";
-                return;
-            }
-
-            forzaMotion = forzaInput.Poll();
-            forzaInputStatus = forzaMotion.Source;
+            MotionSnapshot next = UseForzaPhysics() ? forzaInput.Poll() : MotionSnapshot.Empty("Forza physics off");
+            forzaDiagnostics = forzaInput.Diagnostics;
+            lock (telemetryGate) { forzaMotion = next; forzaInputStatus = next.Source; }
         }
 
         private double[] BuildCommandedRates(double activeX, double activeY, double calibrationIntensity)
@@ -1489,7 +1521,8 @@ namespace VestibularJoystickSim
 
         private MotionSnapshot GetFreshGameMotion()
         {
-            return SelectGameMotion(UseMsfsPhysics(), msfsMotion, UseForzaPhysics(), forzaMotion);
+            lock (telemetryGate)
+                return SelectGameMotion(UseMsfsPhysics(), msfsMotion, UseForzaPhysics(), forzaMotion);
         }
 
         private static MotionSnapshot SelectGameMotion(bool useMsfs, MotionSnapshot msfs, bool useForza, MotionSnapshot forza)
@@ -1523,15 +1556,19 @@ namespace VestibularJoystickSim
         {
             if (!serialOutput.Status.Connected) return;
             if (!armed && connectionAge.ElapsedMilliseconds < 3000)
-            {
-                SetStatus("Wait 3 seconds after connection before Arm");
-                return;
-            }
+            { SetStatus("Wait 3 seconds after connection before Arm"); return; }
+            if (!offlineMode && (controlWorker == null || !controlWorker.IsRunning))
+            { SetStatus("Input control stopped - restart app before Arm"); return; }
+            string message;
             try
             {
-                ResetCommandHistory();
-                if (armed) { serialOutput.Disarm(); SetStatus("Disarmed"); }
-                else { serialOutput.Arm(); SetStatus("Arm sent - firmware does not acknowledge"); }
+                lock (controlGate)
+                {
+                    ResetCommandHistory();
+                    if (armed) { serialOutput.Disarm(); message = "Disarmed"; }
+                    else { serialOutput.Arm(); message = "Arm sent - continuous input control; no firmware ACK"; }
+                }
+                SetStatus(message);
             }
             catch (Exception ex) { SetStatus("Serial error - disarmed: " + ex.Message); }
             UpdateUi();
@@ -1539,43 +1576,32 @@ namespace VestibularJoystickSim
 
         private void PauseButtonClick(object sender, EventArgs e)
         {
-            paused = !paused;
-            if (paused)
+            string message;
+            lock (controlGate)
             {
-                StopCalibration();
-                ResetCommandHistory();
-                serialOutput.Disarm();
-                SetStatus("Paused - disarmed");
+                paused = !paused;
+                if (paused)
+                {
+                    ResetCommandHistory(); serialOutput.Disarm();
+                    message = "Paused - disarmed";
+                }
+                else message = serialOutput.Status.Connected ? "Connected - press Arm" : "Ready";
             }
-            else if (armed)
-            {
-                SetStatus("Output armed - legacy gvs.py");
-            }
-            else if (serialOutput.Status.Connected)
-            {
-                SetStatus("Connected");
-            }
-            else
-            {
-                SetStatus("Ready");
-            }
+            SetStatus(message);
             pauseButton.Text = paused ? "Resume" : "Pause";
             UpdateUi();
         }
 
         private void ResetButtonClick(object sender, EventArgs e)
         {
-            yaw = 0.0;
-            pitch = 0.0;
-            roll = 0.0;
-            StopCalibration();
-            SendNeutralOutput();
+            lock (controlGate) { yaw = pitch = roll = 0.0; SendNeutralOutput(); }
             UpdateUi();
         }
 
         private void GainSliderScroll(object sender, EventArgs e)
         {
-            currentPeakMilliamp = Clamp(gainSlider.Value / (double)CurrentPeakSliderScale, 0.0, MaxCurrentPeakMilliamp);
+            lock (controlGate)
+                currentPeakMilliamp = Clamp(gainSlider.Value / (double)CurrentPeakSliderScale, 0.0, MaxCurrentPeakMilliamp);
             gainValueLabel.Text = FormatCurrentPeakLabel(currentPeakMilliamp);
         }
 
@@ -1586,27 +1612,35 @@ namespace VestibularJoystickSim
 
         private void StartCalibration(int direction)
         {
-            if (!armed || paused) { SetStatus("Connect and Arm before calibration"); return; }
-            if (calibrationDirection == (direction < 0 ? -1 : 1)) { CancelCalibration(); return; }
-            SendNeutralOutput();
-            calibrationDirection = direction < 0 ? -1 : 1;
-            calibrationClock.Restart();
-            SetStatus(direction > 0 ? "Left Cal - 200 ms bench directional test" : "Right Cal - 200 ms bench directional test");
+            lock (controlGate)
+            {
+                if (!armed || paused) { SetStatus("Connect and Arm before calibration"); return; }
+                if (calibrationDirection == (direction < 0 ? -1 : 1))
+                {
+                    ResetCommandHistory(); serialOutput.Disarm();
+                }
+                else
+                {
+                    SendNeutralOutput();
+                    calibrationDirection = direction < 0 ? -1 : 1;
+                    calibrationClock.Restart();
+                }
+            }
+            SetStatus(calibrationDirection == 0 ? "Calibration stopped - disarmed" :
+                (direction > 0 ? "Left Cal - 200 ms bench directional test" : "Right Cal - 200 ms bench directional test"));
             UpdateUi();
         }
 
         private void StopCalibration()
         {
-            calibrationDirection = 0;
-            calibrationClock.Reset();
+            lock (controlGate) { calibrationDirection = 0; calibrationClock.Reset(); }
         }
 
         private void CancelCalibration()
         {
-            ResetCommandHistory();
-            serialOutput.Disarm();
+            lock (controlGate) { ResetCommandHistory(); serialOutput.Disarm(); }
             SetStatus("Calibration stopped - disarmed");
-            UpdateUi();
+            if (Thread.CurrentThread.ManagedThreadId == uiThreadId) UpdateUi();
         }
 
         private static double CalibrationIntensity(double seconds)
@@ -1841,8 +1875,12 @@ namespace VestibularJoystickSim
             }
             lastUiTextUpdate = now;
 
-            bool msfsFresh = UseMsfsPhysics() && msfsMotion.IsFresh;
-            bool forzaFresh = UseForzaPhysics() && forzaMotion.IsFresh;
+            bool msfsFresh, forzaFresh;
+            lock (telemetryGate)
+            {
+                msfsFresh = UseMsfsPhysics() && msfsMotion.IsFresh;
+                forzaFresh = UseForzaPhysics() && forzaMotion.IsFresh;
+            }
             string inputState = physicalInputConnected ? "LEFT STICK READY" : "CONNECT CONTROLLER";
             if (paused)
             {
@@ -1884,6 +1922,8 @@ namespace VestibularJoystickSim
         private string lastLoggedStatus;
         private void SetStatus(string text)
         {
+            if (Thread.CurrentThread.ManagedThreadId != uiThreadId)
+            { pendingControlStatus = text; return; }
             if (lastLoggedStatus != text) { RuntimeDiagnostics.Record("STATUS " + text); lastLoggedStatus = text; }
             if (statusLabel != null)
             {
@@ -1894,18 +1934,21 @@ namespace VestibularJoystickSim
 
         private void SelectGame(GameKind game)
         {
-            // Re-selecting an already active feed must not close sockets or
-            // unexpectedly stop an existing session. Switching source disarms.
             if ((game == GameKind.Forza && useForzaPhysics && !useMsfsPhysics) ||
                 (game == GameKind.Msfs && useMsfsPhysics && !useForzaPhysics)) return;
-            serialOutput.Disarm();
-            ResetCommandHistory();
-            useMsfsPhysics = game == GameKind.Msfs;
-            useForzaPhysics = game == GameKind.Forza;
+            lock (controlGate)
+            {
+                serialOutput.Disarm(); ResetCommandHistory();
+                useMsfsPhysics = game == GameKind.Msfs;
+                useForzaPhysics = game == GameKind.Forza;
+                forzaInput.ResetStatus();
+                lock (telemetryGate)
+                {
+                    msfsMotion = MotionSnapshot.Empty("MSFS waiting");
+                    forzaMotion = MotionSnapshot.Empty("Forza waiting");
+                }
+            }
             msfsInput.ResetStatus();
-            forzaInput.ResetStatus();
-            msfsMotion = MotionSnapshot.Empty("MSFS waiting");
-            forzaMotion = MotionSnapshot.Empty("Forza waiting");
             SetStatus(game == GameKind.Forza ?
                 "Forza telemetry selected - Data Out on; IP 127.0.0.1; port 5300 or 5607; output disarmed" :
                 "Flight Sim telemetry selected - load a flight; output disarmed");
@@ -2034,8 +2077,8 @@ namespace VestibularJoystickSim
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "Forza setup: Data Out ON, destination 127.0.0.1, UDP 5300 or 5607\r\n" +
                 "Flight Sim setup: load a flight, unpause, keep SimConnect.dll beside the EXE\r\n" +
-                "Forza counters: " + forzaInput.Diagnostics + "\r\n" +
-                "MSFS counters: " + msfsInput.Diagnostics + "\r\n" +
+                "Forza counters: " + forzaDiagnostics + "\r\n" +
+                "MSFS counters: " + msfsDiagnostics + "\r\n" +
                 "Runtime log: " + RuntimeDiagnostics.LogPath + "\r\n" +
                 "Sender: " + OutputDiagnosticText() + "\r\n" +
                 "VMocion: " + ((serialOutput.Status.Connected) ? connectedPortName + " serial open (no firmware ACK)" : "not connected") + "\r\n" +

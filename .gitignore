@@ -44,3 +44,6 @@
 !src/VestibularJoystickSim/RuntimeDiagnostics.cs
 
 !tools/ReadBoardStatus.cs
+
+!src/VestibularJoystickSim/ControlWorker.cs
+!src/VestibularJoystickSim/ControlWorkerTests.cs

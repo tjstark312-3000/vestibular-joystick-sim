@@ -1,3 +1,11 @@
+## Continuous-input fix v1.2.8 (November 2, 2026)
+
+Joystick acquisition, Forza polling, command calculation, and publication now run in a dedicated monotonic control worker. Window rendering, menus, USB discovery, and SimConnect window callbacks cannot delay that worker. The existing independent serial sender retains its 100 ms source freshness lease and 250 ms gap stop. Commands are timestamped before acquisition, so a slow native read cannot refresh stale data. Losing every input source disarms immediately; a producer exception stops acquisition and requires restarting the app. Explicit Arm still sends neutral, Reset, a reset-settling interval, Direct, and exact neutral; it never automatically rearms after a fault.
+
+MSFS still uses its Windows SimConnect callback; its existing 900 ms telemetry freshness check applies during a blocked UI. Current limits, command mapping, ramp logic, and finite calibration pulses are unchanged. The displayed Arm state is host intent; this legacy protocol has no firmware acknowledgement or analog-output feedback.
+
+Build verification includes background output through a simulated blocked UI, independent stop on a blocked or failed acquisition, no automatic restart, late-sample rejection, and healthy operation across the signed 32-bit millisecond boundary. These are host/model tests. Hardware continuous-run and loss-of-link tests remain separate acceptance checks.
+
 # VFORCE Purple GUI — NRF v1.2.7 fast bench (2026.10.30)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with

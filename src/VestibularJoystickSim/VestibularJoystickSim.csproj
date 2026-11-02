@@ -24,6 +24,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="App.cs" />
+    <Compile Include="ControlWorker.cs" />
+    <Compile Include="ControlWorkerTests.cs" />
     <Compile Include="RuntimeDiagnostics.cs" />
     <Compile Include="SerialOutput.cs" />
     <Compile Include="SerialOutputTests.cs" />

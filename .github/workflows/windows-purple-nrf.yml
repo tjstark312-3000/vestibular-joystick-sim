@@ -3,7 +3,7 @@ name: Purple NRF Windows build
 on:
   push:
     branches:
-      - codex/purple-nrf-calibration-2026-10-27
+      - codex/continuous-input-2026-11-02
   workflow_dispatch:
 
 permissions:
@@ -87,7 +87,7 @@ jobs:
         run: |
           $buildDir = Join-Path $PWD 'outputs\vestibular-joystick-sim'
           $exe = Join-Path $buildDir 'VestibularJoystickSim.exe'
-          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false`nrecommended_fast_firmware=classic_r8_2_fast100_bench" |
+          "source_commit=$env:GITHUB_SHA`nworkflow_run=$env:GITHUB_RUN_ID`nfirmware_target=vmocion-classic-firmware/v0.8.1`nfirmware_modified=false`nrecommended_fast_firmware=classic_r8_3_rollover_bench" |
             Set-Content -Encoding utf8 (Join-Path $buildDir 'BUILD-INFO.txt')
           $expectedHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
           .\tools\Test-SyntheticForzaCapture.ps1 -ExecutablePath $exe `
@@ -98,7 +98,7 @@ jobs:
       - name: Package executable, runtime dependency and instructions
         shell: pwsh
         run: |
-          $name = 'VFORCE-Purple-NRF-v1.2.7-2026.10.30'
+          $name = 'VFORCE-Purple-NRF-v1.2.8-2026.11.02'
           $package = Join-Path $PWD "outputs\$name"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'outputs\vestibular-joystick-sim\VestibularJoystickSim.exe' $package
@@ -117,17 +117,17 @@ jobs:
       - name: Upload Windows download
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.7-2026.10.30
+          name: VFORCE-Purple-NRF-v1.2.8-2026.11.02
           if-no-files-found: error
           path: |
-            outputs/VFORCE-Purple-NRF-v1.2.7-2026.10.30.zip
-            outputs/VFORCE-Purple-NRF-v1.2.7-2026.10.30/
+            outputs/VFORCE-Purple-NRF-v1.2.8-2026.11.02.zip
+            outputs/VFORCE-Purple-NRF-v1.2.8-2026.11.02/
 
       - name: Upload UI verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.7-2026.10.30-UI-check
+          name: VFORCE-Purple-NRF-v1.2.8-2026.11.02-UI-check
           if-no-files-found: warn
           path: outputs/ui-smoke/
 
@@ -135,6 +135,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VFORCE-Purple-NRF-v1.2.7-2026.10.30-Capture-check
+          name: VFORCE-Purple-NRF-v1.2.8-2026.11.02-Capture-check
           if-no-files-found: warn
           path: outputs/capture-smoke/
