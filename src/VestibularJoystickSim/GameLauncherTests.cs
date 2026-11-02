@@ -7,6 +7,10 @@ namespace VestibularJoystickSim
     {
         internal static bool Run()
         {
+            string explorer = GameLauncher.ExplorerPath;
+            Require(File.Exists(explorer), "the actual Windows Explorer executable must exist at the resolved launch path");
+            Require(Path.GetDirectoryName(explorer).Equals(Environment.GetFolderPath(Environment.SpecialFolder.Windows), StringComparison.OrdinalIgnoreCase),
+                "Explorer must resolve from the Windows root rather than System32");
             Require(GameLauncher.MatchesStartApp(true, "Forza Horizon 5", "Microsoft.624F8B84B80_8wekyb3d8bbwe!Forzahorizon5"), "Forza installed registration");
             Require(GameLauncher.MatchesStartApp(false, "Microsoft Flight Simulator", "Microsoft.FlightSimulator_8wekyb3d8bbwe!App"), "MSFS installed registration");
             Require(GameLauncher.MatchesStartApp(false, "Microsoft Flight Simulator 2024", "Microsoft.Limitless_8wekyb3d8bbwe!App"), "MSFS2024 installed registration");

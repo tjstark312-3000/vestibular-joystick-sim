@@ -1,4 +1,6 @@
-## Direct game launch v1.2.9 (November 2, 2026)
+## Direct game launch v1.2.10 (November 2, 2026)
+
+This release corrects the Windows Explorer launch path to the Windows root. Its Windows self-test checks that the resolved shell executable actually exists before packaging.
 
 The three calibration buttons have been removed from the console. The output controls are Arm, Pause, and Advanced.
 
@@ -18,7 +20,7 @@ MSFS still uses its Windows SimConnect callback; its existing 900 ms telemetry f
 
 Build verification includes background output through a simulated blocked UI, independent stop on a blocked or failed acquisition, no automatic restart, late-sample rejection, and healthy operation across the signed 32-bit millisecond boundary. These are host/model tests. Hardware continuous-run and loss-of-link tests remain separate acceptance checks.
 
-# VFORCE Purple GUI — NRF v1.2.9 (2026.11.02)
+# VFORCE Purple GUI — NRF v1.2.10 (2026.11.02)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
 one-click installed-game launch, Forza Horizon 5 UDP telemetry, and Microsoft
@@ -144,7 +146,7 @@ instead of reporting that transient reset as a permanent port-bind failure.
 A real failure to bind both Forza ports still reports an error.
 
 The aligned-head frame assumption and no-USB capture mode introduced in
-v1.2.3 are retained. Use the complete v1.2.9 package for the current mapping
+v1.2.3 are retained. Use the complete v1.2.10 package for the current mapping
 and capture fix.
 Synthetic test packets are clearly labeled as fixtures and do not establish
 telemetry from a running game or measured board output.

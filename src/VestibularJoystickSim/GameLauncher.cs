@@ -13,6 +13,8 @@ namespace VestibularJoystickSim
     internal static class GameLauncher
     {
         private sealed class StartApp { internal string Name, Id; }
+        internal static string ExplorerPath
+        { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"); } }
         internal static string RequestLaunch(bool forza, Func<bool> current)
         {
             string name = forza ? "Forza Horizon 5" : "Flight Simulator";
@@ -49,7 +51,7 @@ namespace VestibularJoystickSim
             if (!current()) return "Launch superseded";
             if (appId != null)
             {
-                ProcessStartInfo request = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "explorer.exe"),
+                ProcessStartInfo request = new ProcessStartInfo(ExplorerPath,
                     "shell:AppsFolder\\" + appId) { UseShellExecute = true };
                 using (Process process = Process.Start(request)) { }
                 return name + " launch requested - telemetry listening; waiting for live game data";

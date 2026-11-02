@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.9.0")]
-[assembly: AssemblyFileVersion("1.2.9.0")]
+[assembly: AssemblyVersion("1.2.10.0")]
+[assembly: AssemblyFileVersion("1.2.10.0")]
 
 namespace VestibularJoystickSim
 {
