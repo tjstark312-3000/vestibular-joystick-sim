@@ -47,3 +47,6 @@
 
 !src/VestibularJoystickSim/ControlWorker.cs
 !src/VestibularJoystickSim/ControlWorkerTests.cs
+
+!src/VestibularJoystickSim/GameLauncher.cs
+!src/VestibularJoystickSim/GameLauncherTests.cs

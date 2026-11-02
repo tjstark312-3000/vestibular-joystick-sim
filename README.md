@@ -1,3 +1,15 @@
+## Direct game launch v1.2.9 (November 2, 2026)
+
+The three calibration buttons have been removed from the console. The output controls are Arm, Pause, and Advanced.
+
+Click **FLIGHT SIM** or **FORZA 5** once to select its telemetry feed and request the installed game's launch. There is no launch-choice menu. If the game is already running, the app keeps listening and attempts to bring its window forward. Selecting a different feed disarms output; clicking the already selected feed preserves its session. Launching never arms output automatically.
+
+Game discovery runs in the background. Xbox/Store games use the actual current-user `Get-StartApps` registration; Steam is used only when a matching installed-game manifest and game folder are present. Missing registrations or launch errors leave the listener enabled and report the problem. A launch request is not proof that a game is running or sending data: a button shows **LIVE** only after valid fresh telemetry arrives.
+
+Forza requires its game-side **Data Out** setting ON, destination **127.0.0.1**, port **5300** or **5607**. The GUI automatically listens/retries; it does not claim to change the game's unsupported settings. Flight Simulator automatically retries its same-PC SimConnect connection; load and unpause a flight and keep `SimConnect.dll` beside the EXE. Continuous control, explicit Arm, current limits, and lost-input/link stops from v1.2.8 remain.
+
+Windows launch resolution and UI checks use mocked launch requests; they do not establish a real game launch or real game telemetry.
+
 ## Continuous-input fix v1.2.8 (November 2, 2026)
 
 Joystick acquisition, Forza polling, command calculation, and publication now run in a dedicated monotonic control worker. Window rendering, menus, USB discovery, and SimConnect window callbacks cannot delay that worker. The existing independent serial sender retains its 100 ms source freshness lease and 250 ms gap stop. Commands are timestamped before acquisition, so a slow native read cannot refresh stale data. Losing every input source disarms immediately; a producer exception stops acquisition and requires restarting the app. Explicit Arm still sends neutral, Reset, a reset-settling interval, Direct, and exact neutral; it never automatically rearms after a fault.
@@ -6,11 +18,11 @@ MSFS still uses its Windows SimConnect callback; its existing 900 ms telemetry f
 
 Build verification includes background output through a simulated blocked UI, independent stop on a blocked or failed acquisition, no automatic restart, late-sample rejection, and healthy operation across the signed 32-bit millisecond boundary. These are host/model tests. Hardware continuous-run and loss-of-link tests remain separate acceptance checks.
 
-# VFORCE Purple GUI — NRF v1.2.7 fast bench (2026.10.30)
+# VFORCE Purple GUI — NRF v1.2.9 (2026.11.02)
 
 Windows x64 update of the purple VFORCE Vestibular Simulation Console, with
-**Left Cal** and **Right Cal**, Forza Horizon 5 UDP telemetry, and Microsoft
-Flight Simulator SimConnect input. This package updates the GUI application
+one-click installed-game launch, Forza Horizon 5 UDP telemetry, and Microsoft
+Flight Simulator SimConnect input. Calibration controls have been removed. This package updates the GUI application
 only. It does not flash, modify or provision firmware.
 
 ## v1.2.7 fast-response dummy-load bench pair
@@ -159,10 +171,10 @@ The host applies the selected PDF direction matrix and balanced byte
 quantization in this aligned frame. These are host-model amplitudes;
 delivered current is not measured and actual head movement is not tracked.
 
-The game-menu lifecycle fix from v1.2.2 is retained. Windows UI smoke checks
-exercise 24 native menu-item clicks, repeated opens/dismissals and disposal
-when the form closes; `menu-lifecycle.txt` records that regression check.
-Passing these checks does not establish live game physics or board output.
+Windows UI smoke checks exercise direct launch-and-listen buttons with mocked
+launch requests, repeated selections, and native controller-menu clicks and
+disposal; `menu-lifecycle.txt` records that regression check. Passing these
+checks does not establish a real game launch, live physics, or board output.
 
 ## Install on a Windows Steam Deck or ROG Ally
 
@@ -216,14 +228,10 @@ Those checks do not verify the embedded controller, mode configuration, driver
 behavior, foreground/background delivery, or physical stick movement on an
 ASUS ROG Ally. Tyler's on-device check is still required for those results.
 
-## Left Cal and Right Cal
+## Output controls
 
-The two buttons run finite, opposite-direction check pulses using the selected
-command scale. They use the existing four-channel motion protocol, override
-game/stick motion during the200ms pulse, and disarm when complete.
-Click the active direction again or **Stop Cal** to stop and disarm.
-They are directional checks: they do not measure electrical output, save
-calibration coefficients, or change firmware calibration.
+Calibration buttons are no longer exposed. Use Arm for live joystick/game
+commands, Disarm to stop output, or Pause to stop and disarm the session.
 
 The nominal command slider spans **0–1.50 mA**, starting at **0.50 mA**. The
 label is a firmware nominal command, not a measured-current indication. The
@@ -232,8 +240,8 @@ channel-byte range and keeps neutral at 128.
 
 The GUI stops its command session on input expiry or a serial failure and
 requires a fresh explicit **Arm**. New input never automatically rearms a
-stopped session. **Pause**, **Disarm**, and closing the app interrupt the
-direction check. Restart the check explicitly after stopping.
+stopped session. **Pause**, **Disarm**, and closing the app stop output.
+Use a fresh explicit Arm to start a new session.
 
 ## Forza Horizon 5
 
@@ -339,7 +347,7 @@ including the Forza UDP loopback check. UI smoke checks render the handheld
 layout without opening a serial device. All six PDF directions are checked
 at default and maximum nominal limits, including exact neutral A/C channels
 for roll. GUI command-path tests check signed game/joystick vectors at varied
-display attitudes, plus Left Cal/Right Cal through mock transport.
+display attitudes, plus the internal finite directional model through mock transport. The calibration buttons are absent from the view.
 A separate two-second quiet Forza
 capture check verifies CSV/summary consistency, zero fresh game samples and
 zero USB opens/transmitted packets; it does not stand in for live driving.

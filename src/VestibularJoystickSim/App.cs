@@ -18,8 +18,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyProduct("VFORCE Vestibular Simulation Console")]
 [assembly: AssemblyDescription("Joystick and simulator telemetry bridge for VMocion-compatible vestibular hardware.")]
-[assembly: AssemblyVersion("1.2.8.0")]
-[assembly: AssemblyFileVersion("1.2.8.0")]
+[assembly: AssemblyVersion("1.2.9.0")]
+[assembly: AssemblyFileVersion("1.2.9.0")]
 
 namespace VestibularJoystickSim
 {
@@ -91,8 +91,8 @@ namespace VestibularJoystickSim
         }
         private static int RunSelfTests(string reportPath)
         {
-            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback/retry/stale status", "Asynchronous runtime fault log", "Background control independent of UI and acquisition fault stop" };
-            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest, RuntimeDiagnostics.SelfTest, ControlWorkerTests.Run };
+            string[] names = new string[] { "Packet framing", "NRF profile and 6561 vector cases", "Serial sender and reset boundary", "Forza parser", "MSFS parser and pause state", "GUI motion/calibration transforms", "Joystick ABI/raw mapping and controller selection", "Native Windows XInput API", "Forza UDP loopback/retry/stale status", "Asynchronous runtime fault log", "Background control independent of UI and acquisition fault stop", "Installed game launch resolution" };
+            Func<bool>[] tests = new Func<bool>[] { PacketBuilder.SelfTest, ClassicNrfProfile.SelfTest, SerialOutputTests.Run, ForzaUdpTelemetryInput.SelfTest, MsfsSimConnectInput.SelfTest, MainForm.SelfTest, PhysicalJoystickInput.SelfTest, PhysicalJoystickInput.NativeSelfTest, ForzaUdpTelemetryInput.LoopbackSelfTest, RuntimeDiagnostics.SelfTest, ControlWorkerTests.Run, GameLauncherTests.Run };
             List<string> report = new List<string>();
             bool passed = true;
             for (int i = 0; i < tests.Length; i++)
@@ -158,7 +158,6 @@ namespace VestibularJoystickSim
         private readonly Button connectButton;
         private readonly Button armButton;
         private readonly Button pauseButton;
-        private readonly Button calLeftButton, calRightButton, stopCalButton;
         private readonly bool offlineMode;
         private Control smokeSurface;
         private readonly Button controllerButton;
@@ -236,6 +235,8 @@ namespace VestibularJoystickSim
         private int calibrationDirection;
         private long lastRuntimeReportTicks;
         private bool reportingUnexpectedError;
+        private int launchRevision;
+        private int simulatedLaunchRequests;
 
         public MainForm() : this(false) { }
 
@@ -330,8 +331,8 @@ namespace VestibularJoystickSim
             controllerBadge = new StatusBadge("LEFT STICK");
             msfsLaunchButton = MakeGameButton("FLIGHT SIM", msfsGameImage);
             forzaLaunchButton = MakeGameButton("FORZA 5", forzaGameImage);
-            msfsLaunchButton.Click += delegate { SelectGame(GameKind.Msfs); };
-            forzaLaunchButton.Click += delegate { SelectGame(GameKind.Forza); };
+            msfsLaunchButton.Click += delegate { LaunchGame(GameKind.Msfs); };
+            forzaLaunchButton.Click += delegate { LaunchGame(GameKind.Forza); };
             badgeFlow.Controls.Add(outputBadge);
             badgeFlow.Controls.Add(deviceBadge);
             badgeFlow.Controls.Add(controllerBadge);
@@ -441,15 +442,6 @@ namespace VestibularJoystickSim
             pauseButton = MakeButton("Pause");
             pauseButton.Click += PauseButtonClick;
 
-            calLeftButton = MakeButton("Left Cal");
-            calRightButton = MakeButton("Right Cal");
-            stopCalButton = MakeButton("Stop Cal");
-            calLeftButton.AccessibleName = "Left Cal";
-            calRightButton.AccessibleName = "Right Cal";
-            calLeftButton.Click += delegate { StartCalibration(1); };
-            calRightButton.Click += delegate { StartCalibration(-1); };
-            stopCalButton.Click += delegate { CancelCalibration(); };
-
             Button diagnosticsButton = MakeButton("Advanced");
             diagnosticsButton.Width = 108;
             diagnosticsButton.Click += ShowDiagnostics;
@@ -470,9 +462,8 @@ namespace VestibularJoystickSim
             TableLayoutPanel actionFlow = new TableLayoutPanel();
             actionFlow.Dock = DockStyle.Fill;
             actionFlow.ColumnCount = 3;
-            actionFlow.RowCount = 2;
-            actionFlow.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            actionFlow.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            actionFlow.RowCount = 1;
+            actionFlow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
             actionFlow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
@@ -485,12 +476,6 @@ namespace VestibularJoystickSim
             actionFlow.Controls.Add(armButton, 0, 0);
             actionFlow.Controls.Add(pauseButton, 1, 0);
             actionFlow.Controls.Add(diagnosticsButton, 2, 0);
-            SetFillButton(calLeftButton);
-            SetFillButton(calRightButton);
-            SetFillButton(stopCalButton);
-            actionFlow.Controls.Add(calLeftButton, 0, 1);
-            actionFlow.Controls.Add(calRightButton, 1, 1);
-            actionFlow.Controls.Add(stopCalButton, 2, 1);
             simulationLayout.Controls.Add(actionFlow, 0, 1);
 
             TableLayoutPanel workspace = new TableLayoutPanel();
@@ -587,11 +572,8 @@ namespace VestibularJoystickSim
             toolTip.SetToolTip(refreshButton, "Rescan Windows serial devices.");
             toolTip.SetToolTip(connectButton, "Connect or disconnect the selected VMocion serial device.");
             toolTip.SetToolTip(armButton, "Explicitly enable live output. Output always starts disarmed.");
-            toolTip.SetToolTip(msfsLaunchButton, "Listen to Flight Simulator telemetry. Load a flight and keep SimConnect.dll beside this app.");
-            toolTip.SetToolTip(forzaLaunchButton, "Listen to Forza telemetry. In Forza enable Data Out, IP 127.0.0.1, UDP port 5300 or 5607.");
-            toolTip.SetToolTip(calLeftButton, "200 ms left bench directional pulse, about 100 ms rise at the nominal command limit. Requires explicit Arm; click again to stop.");
-            toolTip.SetToolTip(calRightButton, "200 ms right bench directional pulse, about 100 ms rise at the nominal command limit. Requires explicit Arm; click again to stop.");
-            toolTip.SetToolTip(stopCalButton, "Stop the directional test and disarm output.");
+            toolTip.SetToolTip(msfsLaunchButton, "Open the installed Flight Simulator and listen automatically. Load and unpause a flight; output still requires Arm.");
+            toolTip.SetToolTip(forzaLaunchButton, "Open installed Forza Horizon 5 and listen automatically. First-time game setup: Data Out ON, IP 127.0.0.1, UDP 5300 or 5607. Output still requires Arm.");
             toolTip.SetToolTip(safetyFooter, safetyFooter.Text);
 
             portCombo.TabIndex = 0;
@@ -823,7 +805,7 @@ namespace VestibularJoystickSim
             surface.Refresh();
             Application.DoEvents();
             File.AppendAllText(Path.Combine(directory, "layout.txt"), name + ": rendered_client=" + surface.ClientSize + " bitmap=" + surface.Size + " runner_screen=" + Screen.PrimaryScreen.Bounds + "\r\n");
-            Button[] controls = new Button[] { calLeftButton, calRightButton, stopCalButton, armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton, controllerButton };
+            Button[] controls = new Button[] { armButton, pauseButton, connectButton, msfsLaunchButton, forzaLaunchButton, controllerButton };
             foreach (Button control in controls)
             {
                 Rectangle box = surface.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
@@ -860,7 +842,7 @@ namespace VestibularJoystickSim
                     surface.CreateControl();
                     surface.Show();
                     form.SaveSmokeFrame(directory, "purple-1280x800");
-                    SmokeRequire(!form.armed && !form.calLeftButton.Enabled && !form.calRightButton.Enabled, "Calibration enabled while disarmed");
+                    SmokeRequire(!form.armed && form.calibrationDirection == 0, "Output or calibration active on launch");
                     surface.Size = new Size(1180, 650);
                     form.SaveSmokeFrame(directory, "purple-1180x650");
                     surface.Size = new Size(1124, 621);
@@ -871,7 +853,7 @@ namespace VestibularJoystickSim
                     form.connectedPortName = "SIMULATED";
                     form.serialOutput.Arm();
                     form.UpdateUi();
-                    form.calLeftButton.PerformClick();
+                    form.StartCalibration(1);
                     Thread.Sleep(120);
                     form.UpdateVestibularOutput();
                     form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
@@ -879,11 +861,11 @@ namespace VestibularJoystickSim
                     form.serialOutput.Pump();
                     SmokeRequire(form.calibrationDirection == 1 && form.currentBytes[0] == 128 && form.currentBytes[1] > 128 && form.currentBytes[2] == 128 && form.currentBytes[3] < 128, "Left Cal did not match PDF left-roll direction");
                     form.SaveSmokeFrame(directory, "purple-left-cal-mock");
-                    form.stopCalButton.PerformClick();
+                    form.CancelCalibration();
                     SmokeRequire(!form.armed && form.calibrationDirection == 0, "Stop Cal did not disarm");
                     form.serialOutput.Arm();
                     form.UpdateUi();
-                    form.calRightButton.PerformClick();
+                    form.StartCalibration(-1);
                     Thread.Sleep(120);
                     form.UpdateVestibularOutput();
                     form.UpdateVestibularOutput(); // Advance two control ticks through the slew/quantization boundary.
@@ -915,7 +897,7 @@ namespace VestibularJoystickSim
                     form.toolTip.Dispose();
                 }
                 RunMenuLifecycleSmoke(directory);
-                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: aligned-frame game/joystick cross-axis regression at varied visual attitudes; direct game telemetry buttons, repeated selection and controller native menu-click lifecycle; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; Left Cal/Right Cal directions via mock transport; Stop Cal/Pause disarm; game source switching. No physical hardware or running game tested.");
+                File.WriteAllText(Path.Combine(directory, "result.txt"), "PASS: aligned-frame game/joystick cross-axis regression at varied visual attitudes; direct launch-and-listen buttons with mocked launches, repeated selection and controller native menu-click lifecycle; device-free Windows view-tree renders at exact 1280x800, 1280x720, 1180x650 and minimum client size1124x621; internal finite directional model via mock transport; calibration buttons removed; Pause disarm; game source switching. No physical hardware or running game tested.");
                 return 0;
             }
             catch (Exception ex)
@@ -1104,7 +1086,7 @@ namespace VestibularJoystickSim
         private static void RunMenuLifecycleSmoke(string directory)
         {
             string report = Path.Combine(directory, "menu-lifecycle.txt");
-            File.WriteAllText(report, "Device-free direct game buttons and native controller-menu regression; mock output transport only.\r\n");
+            File.WriteAllText(report, "Device-free launch-and-listen buttons and native controller-menu regression; mock launch requests and output transport only.\r\n");
             using (MainForm form = new MainForm(true))
             {
                 form.Show();
@@ -1117,11 +1099,14 @@ namespace VestibularJoystickSim
                     foreach (GameKind game in games)
                     {
                         Button button = game == GameKind.Forza ? form.forzaLaunchButton : form.msfsLaunchButton;
+                        int launchesBefore = form.simulatedLaunchRequests;
                         button.PerformClick();
                         Application.DoEvents();
+                        SmokeRequire(form.simulatedLaunchRequests == launchesBefore + 1,
+                            "Direct game click did not request launch as well as telemetry");
                         SmokeRequire(form.useForzaPhysics == (game == GameKind.Forza) &&
                             form.useMsfsPhysics == (game == GameKind.Msfs) && !form.armed && form.calibrationDirection == 0,
-                            "Direct game button must select telemetry and disarm on source change");
+                            "Direct game button must request launch, select telemetry and disarm on source change");
                         SmokeRequire(button.ContextMenuStrip == null && form.menuComponents.Components.Count == 1,
                             "Game button unexpectedly created a launch menu");
                         form.serialOutput.Arm();
@@ -1129,7 +1114,7 @@ namespace VestibularJoystickSim
                         button.PerformClick();
                         SmokeRequire(form.armed && form.packetCount == before,
                             "Re-selecting the active game unexpectedly reset/stopped output");
-                        File.AppendAllText(report, "PASS direct " + game + " selection, no launch menu, repeated click preserves session\r\n");
+                        File.AppendAllText(report, "PASS direct " + game + " launch request plus telemetry, no launch menu, repeated click preserves session\r\n");
                     }
                     for (int i = 0; i < controller.Items.Count; i++)
                     {
@@ -1143,7 +1128,7 @@ namespace VestibularJoystickSim
                 form.Close();
                 form.Dispose();
                 SmokeRequire(controller.IsDisposed, "Form did not dispose controller menu");
-                File.AppendAllText(report, "PASS direct telemetry buttons and 15 native controller-menu clicks. No launch functions or game launch menus; no USB transport opened.\r\n");
+                File.AppendAllText(report, "PASS direct launch-and-listen buttons and 15 native controller-menu clicks. Game launches mocked; no game launch menus or USB transport opened.\r\n");
             }
         }
 
@@ -1811,12 +1796,6 @@ namespace VestibularJoystickSim
             connectButton.Text = output.Connected ? "Disconnect" : "Connect";
             portCombo.Enabled = !output.Connected;
             armButton.Enabled = output.Connected && !paused && (output.Armed || connectionAge.ElapsedMilliseconds >= 3000);
-            calLeftButton.Enabled = calRightButton.Enabled = output.Armed && !paused;
-            stopCalButton.Enabled = calibrationDirection != 0;
-            calLeftButton.BackColor = calibrationDirection > 0 ? Theme.Warning : Theme.PurpleDim;
-            calRightButton.BackColor = calibrationDirection < 0 ? Theme.Warning : Theme.PurpleDim;
-            calLeftButton.ForeColor = calibrationDirection > 0 ? Color.Black : Theme.Text;
-            calRightButton.ForeColor = calibrationDirection < 0 ? Color.Black : Theme.Text;
             if (output.Error != null) SetStatus(output.Error);
             MotionSnapshot activeGameMotion = GetFreshGameMotion();
             double displayYaw;
@@ -1930,6 +1909,25 @@ namespace VestibularJoystickSim
                 statusLabel.Text = "SYSTEM  /  " + text.ToUpperInvariant();
                 toolTip.SetToolTip(statusLabel, text);
             }
+        }
+
+        private void LaunchGame(GameKind game)
+        {
+            // Listening starts first and remains enabled if launching fails or
+            // the game is already running. Source changes still disarm output.
+            SelectGame(game);
+            if (offlineMode) { simulatedLaunchRequests++; return; }
+            int revision = Interlocked.Increment(ref launchRevision);
+            string name = game == GameKind.Forza ? "Forza Horizon 5" : "Flight Simulator";
+            SetStatus(name + " telemetry listening - locating installed game");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Func<bool> current = delegate { return !closing && Interlocked.CompareExchange(ref launchRevision, 0, 0) == revision; };
+                string result;
+                try { result = GameLauncher.RequestLaunch(game == GameKind.Forza, current); }
+                catch (Exception ex) { result = name + " launch failed; telemetry listening: " + ex.Message; }
+                if (current()) SetStatus(result);
+            });
         }
 
         private void SelectGame(GameKind game)
@@ -2072,7 +2070,7 @@ namespace VestibularJoystickSim
                 "Game body P/Q/R (rad/s): " + gameMotion.P.ToString("0.000") + " / " + gameMotion.Q.ToString("0.000") + " / " + gameMotion.R.ToString("0.000") + "\r\n" +
                 "Display attitude does not change the output frame\r\n" +
                 "Bench host ramp: 100 ms neutral-to-full; 200 ms full reversal\r\n" +
-                "NRF fast response needs classic_r8_2_fast100_bench; installed identity not acknowledged here\r\n" +
+                "Continuous NRF target: classic_r9_continuous_fast100_bench; installed identity not acknowledged here\r\n" +
                 "MSFS: " + msfsInputStatus + "\r\n" +
                 "Forza: " + forzaInputStatus + "\r\n" +
                 "Forza setup: Data Out ON, destination 127.0.0.1, UDP 5300 or 5607\r\n" +
