@@ -237,6 +237,14 @@ namespace VestibularJoystickSim
         private bool reportingUnexpectedError;
         private int launchRevision;
         private int simulatedLaunchRequests;
+        private readonly object launchStatusGate = new object();
+        private sealed class LaunchStatus
+        {
+            internal readonly int Revision;
+            internal readonly string Text;
+            internal LaunchStatus(int revision, string text) { Revision = revision; Text = text; }
+        }
+        private LaunchStatus pendingLaunchStatus;
 
         public MainForm() : this(false) { }
 
@@ -1125,6 +1133,21 @@ namespace VestibularJoystickSim
                             "Controller menu did not select the exact slot safely");
                     }
                 }
+                form.LaunchGame(GameKind.Forza);
+                int staleRevision = form.launchRevision;
+                form.LaunchGame(GameKind.Msfs);
+                string selectedStatus = form.statusLabel.Text;
+                form.pendingLaunchStatus = new LaunchStatus(staleRevision, "STALE FORZA RESULT");
+                form.ApplyPendingLaunchStatus();
+                SmokeRequire(form.statusLabel.Text == selectedStatus,
+                    "Queued result from the previous game replaced the current selection status");
+                form.pendingControlStatus = "INJECTED CONTROL FAULT";
+                form.pendingLaunchStatus = new LaunchStatus(form.launchRevision, "CURRENT LAUNCH RESULT");
+                form.ApplyPendingLaunchStatus();
+                SmokeRequire(form.pendingControlStatus == "INJECTED CONTROL FAULT" && form.statusLabel.Text == selectedStatus,
+                    "Launch result replaced a queued control fault");
+                form.pendingControlStatus = null;
+                File.AppendAllText(report, "PASS queued launch supersession and independent control-fault priority\r\n");
                 form.Close();
                 form.Dispose();
                 SmokeRequire(controller.IsDisposed, "Form did not dispose controller menu");
@@ -1226,8 +1249,22 @@ namespace VestibularJoystickSim
                 TryAutoConnectVestibularDevice();
             }
             UpdateMsfsInput();
+            ApplyPendingLaunchStatus();
             string status = Interlocked.Exchange(ref pendingControlStatus, null);
             if (status != null) SetStatus(status);
+        }
+
+        private void ApplyPendingLaunchStatus()
+        {
+            LaunchStatus launch;
+            lock (launchStatusGate) { launch = pendingLaunchStatus; pendingLaunchStatus = null; }
+            // Revalidate at consumption: a completed request may have been
+            // queued just before the user selected a different game. Control
+            // faults have their own slot and always retain status priority.
+            if (launch != null && launch.Revision == Interlocked.CompareExchange(ref launchRevision, 0, 0) &&
+                !reportingUnexpectedError && pendingControlStatus == null &&
+                (controlWorker == null || controlWorker.Error == null) && serialOutput.Status.Error == null)
+                SetStatus(launch.Text);
         }
 
         private void ControlTick()
@@ -1916,8 +1953,9 @@ namespace VestibularJoystickSim
             // Listening starts first and remains enabled if launching fails or
             // the game is already running. Source changes still disarm output.
             SelectGame(game);
+            int revision;
+            lock (launchStatusGate) revision = Interlocked.Increment(ref launchRevision);
             if (offlineMode) { simulatedLaunchRequests++; return; }
-            int revision = Interlocked.Increment(ref launchRevision);
             string name = game == GameKind.Forza ? "Forza Horizon 5" : "Flight Simulator";
             SetStatus(name + " telemetry listening - locating installed game");
             ThreadPool.QueueUserWorkItem(delegate
@@ -1926,7 +1964,8 @@ namespace VestibularJoystickSim
                 string result;
                 try { result = GameLauncher.RequestLaunch(game == GameKind.Forza, current); }
                 catch (Exception ex) { result = name + " launch failed; telemetry listening: " + ex.Message; }
-                if (current()) SetStatus(result);
+                lock (launchStatusGate)
+                    if (current()) pendingLaunchStatus = new LaunchStatus(revision, result);
             });
         }
 
