@@ -35,11 +35,10 @@ The paired NRF candidate is `classic_r8_2_fast100_bench` /v0.8.2, with bounded
 but limits response speed. Faster response requires updating both layers.
 Nominal current ceiling, PDF matrix and existing cutoff/rearm protections remain.
 
-Left/Right Cal now make a short triangular bench pulse:100ms rise and100ms
-fall, then disarm at200ms. There is no sustained hold. The Cal buttons are
-finite direction checks; live game/joystick operation uses Arm, not repeated Cal.
-These are software targets, not measured terminal-current timing or human-use
-qualification. Keep body electrodes disconnected and use dummy loads.
+The previous calibration buttons are removed in v1.2.9. Live game/joystick
+operation uses explicit Arm and stops with Disarm or Pause. The ramp figures
+are software targets, not measured terminal-current timing or human-use
+qualification. Commission the prototype with dummy loads.
 
 `ReadBoardStatus.exe` is a separate output-off diagnostic. Close VFORCE first,
 keep the stopped board powered, then double-click it and enter its application
@@ -55,8 +54,8 @@ input cancellation, saturation and independence from display attitude.
 
 ## v1.2.6 telemetry recovery and shutdown diagnostics
 
-Game buttons select telemetry directly. Clicking the selected game again keeps
-its existing stream/session. Switching to the other game disarms output.
+Game buttons select telemetry and request the installed game launch directly.
+Clicking the selected game again keeps its existing stream/session. Switching to the other game disarms output.
 Forza now retries occupied ports every two seconds, including recovery of one
 missing port without closing the other working listener. Stale samples are
 reported as stale rather than retaining a live-sounding physics status.
@@ -115,10 +114,6 @@ additional mixed-axis table supplied by the PDF. The existing default
 **0.50 mA**, hard ceiling **1.50 mA**, balanced downward byte quantization,
 neutral, watchdog and explicit-rearm behavior are retained.
 
-**Left Cal now requests negative P; Right Cal requests positive P.** Thus
-left roll leaves A/C neutral with B positive and D negative, and right roll
-reverses B/D. Their five-second timing and Stop Cal/Pause disarm are retained.
-
 The PDF diagram places A at the left temple, B behind the left ear, C at the
 right temple and D behind the right ear. **This is the selected reference
 order, not a continuity test of the physical cable.** Its A/B placement
@@ -149,7 +144,7 @@ instead of reporting that transient reset as a permanent port-bind failure.
 A real failure to bind both Forza ports still reports an error.
 
 The aligned-head frame assumption and no-USB capture mode introduced in
-v1.2.3 are retained. Use the complete v1.2.7 package for the current mapping
+v1.2.3 are retained. Use the complete v1.2.9 package for the current mapping
 and capture fix.
 Synthetic test packets are clearly labeled as fixtures and do not establish
 telemetry from a running game or measured board output.
